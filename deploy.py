@@ -4,6 +4,7 @@ from deps import download_deps
 from service import create_service
 from nginx import create_nginx_config
 from registry import get_next_port, register_project
+from env import setup_env
 
 def deploy():
     print("\n[→] EZDeploy\n")
@@ -17,8 +18,9 @@ def deploy():
     project_path = clone_repo(repo_url)
     project_name = os.path.basename(project_path)
 
-    # step 2 - dependencies
+    # step 2 - dependencies & env
     download_deps(project_path)
+    setup_env(project_path)
 
     # step 3 - port
     port = get_next_port()
