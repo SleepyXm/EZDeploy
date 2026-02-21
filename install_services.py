@@ -3,7 +3,7 @@ import os
 
 def install():
     print("[→] Installing dependencies...")
-    subprocess.run(["amazon-linux-extras", "install", "nginx1", "-y"], check=True)
+    subprocess.run(["dnf", "install", "nginx", "-y"], check=True)
     subprocess.run(["systemctl", "enable", "nginx"], check=True)
     subprocess.run(["systemctl", "start", "nginx"], check=True)
 
