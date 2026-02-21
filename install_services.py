@@ -11,7 +11,7 @@ def get_package_manager():
     else:
         return None
 
-def install():
+def install(languages: list[str]):
 
     package_manager = get_package_manager()
     if not package_manager:
@@ -20,14 +20,28 @@ def install():
     
     print(f"[→] Found package manager: {package_manager}")
 
+    if "go" in languages:
+        print("[→] Installing Go...")
+        if package_manager == "apt":
+            subprocess.run([package_manager, "install", "golang-go", "-y"], check=True)
+        else:
+            subprocess.run([package_manager, "install", "golang", "-y"], check=True)
+
+    if "python" in languages:
+        print("[→] Installing Python...")
+        subprocess.run([package_manager, "install", "python3", "python3-pip", "-y"], check=True)
+
+    if "node" in languages:
+        print("[→] Installing Node...")
+        subprocess.run([package_manager, "install", "nodejs", "npm", "-y"], check=True)
+
+    if "rust" in languages:
+        print("[→] Installing Rust...")
+        subprocess.run(["curl", "--proto", "=https", "--tlsv1.2", "-sSf", "https://sh.rustup.rs", "-o", "rustup.sh"], check=True)
+        subprocess.run(["sh", "rustup.sh", "-y"], check=True)
+
     print("[→] Installing nginx...")
     subprocess.run([package_manager, "install", "nginx", "-y"], check=True)
-
-    print("[→] Installing Go...")
-    if package_manager == "apt":
-        subprocess.run([package_manager, "install", "golang-go", "-y"], check=True)
-    else:
-        subprocess.run([package_manager, "install", "golang", "-y"], check=True)
 
     print("[→] Installing dependencies...")
     subprocess.run(["systemctl", "enable", "nginx"], check=True)
@@ -59,4 +73,8 @@ def install():
     print("[✓] Server ready")
 
 if __name__ == "__main__":
-    install()
+    print("\n[→] EZDeploy Server Setup\n")
+    print("Available languages: python, node, go, rust")
+    langs = input("[?] Languages to install (comma separated): ").strip().lower().split(",")
+    langs = [l.strip() for l in langs]
+    install(langs)
