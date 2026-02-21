@@ -4,6 +4,7 @@ import os
 def install():
     print("[→] Installing dependencies...")
     subprocess.run(["dnf", "install", "nginx", "-y"], check=True)
+    subprocess.run(["dnf", "install", "golang", "-y"], check=True)
     subprocess.run(["systemctl", "enable", "nginx"], check=True)
     subprocess.run(["systemctl", "start", "nginx"], check=True)
 

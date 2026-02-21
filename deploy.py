@@ -18,20 +18,30 @@ def deploy():
     project_path = clone_repo(repo_url)
     project_name = os.path.basename(project_path)
 
-    # step 2 - dependencies & env
+    # step 2 - entrypoint (skip for Go)
+    is_go = os.path.exists(os.path.join(project_path, "go.mod"))
+    if is_go:
+        entrypoint = ""
+    else:
+        entrypoint = input("[?] Entrypoint (e.g. main:app or index.js): ").strip()
+
+    domain = input("[?] Domain (e.g. app.yourdomain.com or yourdomain.com/app): ").strip()
+    email = input("[?] Email (for SSL certificate): ").strip()
+
+    # step 3 - dependencies & env
     download_deps(project_path)
     setup_env(project_path)
 
-    # step 3 - port
+    # step 4 - port
     port = get_next_port()
 
-    # step 4 - systemd service
+    # step 5 - systemd service
     create_service(project_path, entrypoint, port)
 
-    # step 5 - nginx
+    # step 6 - nginx
     create_nginx_config(project_name, port, domain, email)
 
-    # step 6 - register
+    # step 7 - register
     register_project(project_name, port, domain)
 
     print(f"\n[✓] {project_name} is live at {domain}\n")
