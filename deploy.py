@@ -1,6 +1,6 @@
 import os
 from git import clone_repo
-from deps import install_deps
+from deps import download_deps
 from service import create_service
 from nginx import create_nginx_config
 from registry import get_next_port, register_project
@@ -18,7 +18,7 @@ def deploy():
     project_name = os.path.basename(project_path)
 
     # step 2 - dependencies
-    install_deps(project_path)
+    download_deps(project_path)
 
     # step 3 - port
     port = get_next_port()
