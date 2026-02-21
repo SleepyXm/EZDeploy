@@ -11,7 +11,7 @@ def create_service(project_path: str, entrypoint: str, port: int):
     is_node = os.path.exists(os.path.join(project_path, "package.json"))
 
     if is_python:
-        exec_start = f"/usr/bin/uvicorn {entrypoint} --host 0.0.0.0 --port {port}"
+        exec_start = f"/usr/local/bin/uvicorn {entrypoint} --host 0.0.0.0 --port {port}"
     elif is_node:
         exec_start = f"/usr/bin/node {entrypoint}"
     else:
