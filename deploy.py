@@ -10,9 +10,6 @@ def deploy():
     print("\n[→] EZDeploy\n")
 
     repo_url = input("[?] GitHub repo URL: ").strip()
-    entrypoint = input("[?] Entrypoint (e.g. main:app or index.js): ").strip()
-    domain = input("[?] Domain (e.g. app.yourdomain.com or yourdomain.com/app): ").strip()
-    email = input("[?] Email (for SSL certificate): ").strip()
 
     # step 1 - clone
     project_path = clone_repo(repo_url)
@@ -20,10 +17,10 @@ def deploy():
 
     # step 2 - entrypoint (skip for Go)
     is_go = os.path.exists(os.path.join(project_path, "go.mod"))
-    if is_go:
-        entrypoint = ""
-    else:
+    if not is_go:
         entrypoint = input("[?] Entrypoint (e.g. main:app or index.js): ").strip()
+    else:
+        entrypoint = ""
 
     domain = input("[?] Domain (e.g. app.yourdomain.com or yourdomain.com/app): ").strip()
     email = input("[?] Email (for SSL certificate): ").strip()

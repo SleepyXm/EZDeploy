@@ -21,9 +21,15 @@ def download_deps(project_path: str):
 
     elif os.path.exists(go_mod):
         binary_name = get_go_binary_name(project_path)
-        print(f"[→] Go project detected, building binary {binary_name}...")
-        subprocess.run(["go", "build", "-o", binary_name, "."], cwd=project_path, check=True)
-        print(f"[✓] Binary built: {binary_name}")
+        binary_path = os.path.join(project_path, binary_name)
+
+        if os.path.exists(binary_path):
+            print(f"[✓] Pre-built binary found, skipping build...")
+            subprocess.run(["chmod", "+x", binary_path], check=True)
+        else:
+            print(f"[→] Go project detected, building binary {binary_name}...")
+            subprocess.run(["go", "build", "-buildvcs=false", "-o", binary_name, "."], cwd=project_path, check=True)
+            print(f"[✓] Binary built: {binary_name}")
 
 
     elif os.path.exists(package_json):
