@@ -1,3 +1,2 @@
 FastAPI
 uvicorn
-httpx
