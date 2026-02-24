@@ -1,7 +1,7 @@
 import subprocess
 import os
 from CICD.registry import load_registry
-from CICD.deps import install_deps, get_go_binary_name
+from CICD.deps import download_deps, get_go_binary_name
 
 PROJECTS_DIR = "/opt/EZDeploy/projects"
 
@@ -41,7 +41,7 @@ def reload():
             subprocess.run(["go", "build", "-buildvcs=false", "-o", binary_name, "."], cwd=project_path, check=True)
             print(f"[✓] Binary built")
     else:
-        install_deps(project_path)
+        download_deps(project_path)
 
     service_name = f"{project_name}.service"
     print(f"[→] Restarting {service_name}...")
@@ -64,7 +64,7 @@ def reload_project(project_name: str):
         else:
             subprocess.run(["go", "build", "-buildvcs=false", "-o", binary_name, "."], cwd=project_path, check=True)
     else:
-        install_deps(project_path)
+        download_deps(project_path)
 
     subprocess.run(["systemctl", "restart", f"{project_name}.service"], check=True)
 

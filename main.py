@@ -2,7 +2,6 @@ from fastapi import FastAPI, HTTPException, Request, Header, Depends
 import json
 import hmac
 import hashlib
-from CICD import deploy
 from CICD.registry import load_registry
 from CICD.secrets import load_secret
 from CICD.reloader import reload_project
