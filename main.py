@@ -9,6 +9,17 @@ from CICD.reloader import reload_project
 
 app = FastAPI()
 
+
+def verify_signature(payload: bytes, signature: str, secret: str) -> bool:
+    expected = hmac.new(
+        secret.encode(),
+        payload,
+        hashlib.sha256
+    ).hexdigest()
+    
+    return hmac.compare_digest(f"sha256={expected}", signature)
+
+
 @app.post("/gh-webhook")
 async def github_webhook(request: Request):
     signature = request.headers.get("X-Hub-Signature-256")
@@ -38,14 +49,3 @@ async def github_webhook(request: Request):
     reload_project(repo_name)
 
     return {"status": "ok"}
-
-
-
-def verify_signature(payload: bytes, signature: str, secret: str) -> bool:
-    expected = hmac.new(
-        secret.encode(),
-        payload,
-        hashlib.sha256
-    ).hexdigest()
-    
-    return hmac.compare_digest(f"sha256={expected}", signature)

@@ -10,12 +10,12 @@ def create_nginx_config(project_name: str, port: int, domain: str, email: str):
 
 
     is_path = "/" in domain.split(".")[-1]
-
+    webhook_location = f"/gh-webhook"
+    webhook_port = 9000
+    
     if is_path:
         domain_part, path_part = domain.split("/", 1)
         location = f"/{path_part}"
-        webhook_location = f"/gh-webhook"
-        webhook_port = 9000
 
     else:
         domain_part = domain

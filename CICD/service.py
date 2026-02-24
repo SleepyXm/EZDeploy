@@ -22,11 +22,11 @@ def create_service(project_path: str, entrypoint: str, port: int):
 
     if is_python:
         exec_start = f"/usr/local/bin/uvicorn {entrypoint} --host 0.0.0.0 --port {port}"
-    if is_go:
+    elif is_go:
         binary_name = get_go_binary_name(project_path)
         exec_start = f"{project_path}/{binary_name}"
 
-    if is_node:
+    elif is_node:
         exec_start = f"/usr/bin/node {entrypoint}"
     else:
         print("[!] Could not find project type, stopping...")
