@@ -1,7 +1,7 @@
 import subprocess
 import os
 
-CLONE_DIR = "/opt/deployer/projects"
+CLONE_DIR = "/opt/EZDeploy/projects"
 
 def clone_repo(repo_url: str) -> str:
     repo_name = repo_url.rstrip("/").split("/")[-1].replace(".git", "")

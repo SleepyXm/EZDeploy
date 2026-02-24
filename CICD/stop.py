@@ -1,11 +1,11 @@
 import subprocess
 import os
-from registry import load_registry, unregister_project
+from CICD.registry import load_registry, unregister_project
 
 NGINX_SITES_AVAILABLE = "/etc/nginx/sites-available"
 NGINX_SITES_ENABLED = "/etc/nginx/sites-enabled"
 SYSTEMD_DIR = "/etc/systemd/system"
-PROJECTS_DIR = "/opt/deployer/projects"
+PROJECTS_DIR = "/opt/EZDeploy/projects"
 
 def undeploy():
     registry = load_registry()

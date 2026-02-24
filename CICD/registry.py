@@ -1,7 +1,7 @@
 import json
 import os
 
-REGISTRY_PATH = "./reg.json"
+REGISTRY_PATH = "./registry.json"
 STARTING_PORT = 8000
 
 def load_registry() -> dict:
@@ -24,15 +24,19 @@ def get_next_port() -> int:
         port += 1
     return port
 
-def register_project(project_name: str, port: int, domain: str):
+def register_project(project_name: str, port: int, domain: str, repo_url: str, branch: str):
     registry = load_registry()
     registry[project_name] = {
         "port": port,
         "domain": domain,
+        "repo_url": repo_url,
+        "branch": branch,
         "status": "running"
     }
     save_registry(registry)
     print(f"[✓] Registered {project_name} on port {port}")
+
+
 
 def unregister_project(project_name: str):
     registry = load_registry()

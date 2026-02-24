@@ -14,6 +14,9 @@ def create_nginx_config(project_name: str, port: int, domain: str, email: str):
     if is_path:
         domain_part, path_part = domain.split("/", 1)
         location = f"/{path_part}"
+        webhook_location = f"/gh-webhook"
+        webhook_port = 9000
+
     else:
         domain_part = domain
         location = "/"
@@ -24,6 +27,15 @@ def create_nginx_config(project_name: str, port: int, domain: str, email: str):
 
     location {location} {{
         proxy_pass http://127.0.0.1:{port};
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }}
+
+    location {webhook_location} {{
+        proxy_pass http://127.0.0.1:{webhook_port};
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection 'upgrade';
