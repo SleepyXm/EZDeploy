@@ -7,6 +7,38 @@ from CICD.nginx import create_nginx_config
 from CICD.registry import get_next_port, register_project
 from CICD.env import setup_env
 
+def start_webhook_listener():
+    result = subprocess.run(["systemctl", "is-active", "ezdeploy-webhook"], capture_output=True, text=True)
+    if result.stdout.strip() == "active":
+        print("[✓] Webhook listener already running")
+        return
+    
+    ezdeploy_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    
+    service = f"""[Unit]
+Description=EZDeploy Webhook Listener
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 -m uvicorn main:app --host 0.0.0.0 --port 9000
+WorkingDirectory={ezdeploy_dir}
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+"""
+    service_path = "/etc/systemd/system/ezdeploy-webhook.service"
+    
+    with open(service_path, "w") as f:
+        f.write(service)
+    
+    subprocess.run(["systemctl", "daemon-reload"], check=True)
+    subprocess.run(["systemctl", "enable", "ezdeploy-webhook"], check=True)
+    subprocess.run(["systemctl", "start", "ezdeploy-webhook"], check=True)
+    
+    print("[✓] Webhook listener running on port 9000")
+
+
 def deploy():
     print("\n[→] EZDeploy\n")
 
@@ -48,33 +80,6 @@ def deploy():
     print(f"\n[✓] {project_name} is live at {domain}\n")
 
 
-def start_webhook_listener():
-    result = subprocess.run(["systemctl", "is-active", "ezdeploy-webhook"], capture_output=True, text=True)
-    if result.stdout.strip() == "active":
-        print("[✓] Webhook listener already running")
-        return
-    service = """[Unit]
-Description=EZDeploy Webhook Listener
-After=network.target
-
-[Service]
-ExecStart=/usr/bin/python3 -m uvicorn CICD.webhook:app --host 0.0.0.0 --port 9000
-WorkingDirectory=/opt/EZDeploy
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-"""
-    service_path = "/etc/systemd/system/ezdeploy-webhook.service"
-    
-    with open(service_path, "w") as f:
-        f.write(service)
-    
-    subprocess.run(["systemctl", "daemon-reload"], check=True)
-    subprocess.run(["systemctl", "enable", "ezdeploy-webhook"], check=True)
-    subprocess.run(["systemctl", "start", "ezdeploy-webhook"], check=True)
-    
-    print("[✓] Webhook listener running on port 9000")
 
 
 
