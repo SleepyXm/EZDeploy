@@ -1,6 +1,6 @@
 import os
 
-SECRETS_PATH = os.path.join(os.path.dirname(__file__), "../.secrets")
+SECRETS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../.secrets")
 
 def save_secret(secret: str):
     with open(SECRETS_PATH, "w") as f:
