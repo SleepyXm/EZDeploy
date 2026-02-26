@@ -1,4 +1,4 @@
-from asyncio import subprocess
+import subprocess
 import os
 from CICD.git import clone_repo
 from CICD.deps import download_deps
