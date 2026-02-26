@@ -8,6 +8,8 @@ def save_secret(secret: str):
     os.chmod(SECRETS_PATH, 0o600)
 
 def load_secret() -> str:
+    print(f"[DEBUG] Looking for secrets at: {SECRETS_PATH}")
+    print(f"[DEBUG] File exists: {os.path.exists(SECRETS_PATH)}")
     with open(SECRETS_PATH, "r") as f:
         for line in f:
             if line.startswith("WEBHOOK_SECRET="):
