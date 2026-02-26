@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Request, Header, Depends
+from fastapi import FastAPI, HTTPException, Request
 import json
 import hmac
 import hashlib

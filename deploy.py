@@ -21,7 +21,7 @@ After=network.target
 
 [Service]
 ExecStart=/usr/bin/python3 -m uvicorn main:app --host 0.0.0.0 --port 9000
-WorkingDirectory={ezdeploy_dir}
+WorkingDirectory={ezdeploy_dir}/EZDeploy
 Restart=always
 
 [Install]
