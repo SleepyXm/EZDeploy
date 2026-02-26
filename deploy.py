@@ -73,14 +73,11 @@ def deploy():
     create_nginx_config(project_name, port, domain, email)
 
     # step 7 - register
-    register_project(project_name, port, domain, branch)
+    register_project(project_name, port, domain, repo_url, branch)
 
     start_webhook_listener()
 
     print(f"\n[✓] {project_name} is live at {domain}\n")
-
-
-
 
 
 
