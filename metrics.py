@@ -1,6 +1,7 @@
 import subprocess
 import os
 import time
+import re
 from CICD.registry import load_registry
 
 def get_service_status(service_name: str) -> str:
@@ -39,8 +40,15 @@ def get_system_stats() -> dict:
         ["top", "-bn1"],
         capture_output=True, text=True
     ).stdout
-    cpu_line = [l for l in cpu.split("\n") if "Cpu(s)" in l or "%Cpu" in l]
-    cpu_usage = cpu_line[0] if cpu_line else "unknown"
+    cpu_line = [l for l in cpu.split("\n") if "%Cpu" in l or "Cpu(s)" in l]
+    if cpu_line:
+        line = cpu_line[0]
+        
+    # extract idle and calculate usage
+    idle = re.search(r'(\d+\.?\d*)\s*id', line)
+    if idle:
+        usage = 100 - float(idle.group(1))
+        cpu_usage = f"{usage:.1f}%"
 
     # RAM
     mem = subprocess.run(["free", "-h"], capture_output=True, text=True).stdout
