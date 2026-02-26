@@ -16,7 +16,7 @@ def download_deps(project_path: str):
 
     if os.path.exists(requirements):
         print("[→] Python project found, installing dependencies...")
-        subprocess.run(["pip", "install", "-r", requirements], check=True)
+        subprocess.run(["pip", "install", "--ignore-installed", "-r", requirements], check=True)
         print("[✓] Dependencies installed")
 
     elif os.path.exists(go_mod):
