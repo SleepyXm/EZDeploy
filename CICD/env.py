@@ -21,4 +21,6 @@ def setup_env(project_path: str):
         for key, value in env_values.items():
             f.write(f"{key}={value}\n")
 
+
+
     print("\n[✓] .env file created")
