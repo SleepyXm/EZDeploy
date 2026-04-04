@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+ 
+[project]
+name = "testgen"
+version = "0.1.0"
+description = "AST-driven, LLM-powered test bank generator for Python"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["openai"]
+ 
+[project.optional-dependencies]
+dev = ["pytest", "pytest-cov", "ruff"]
+ 
+[project.scripts]
+testgen = "testgen.cli:main"
+ 
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["testgen*"]
+ 
+[tool.pytest.ini_options]
+markers = [
+    "unit: pure unit tests",
+    "integration: integration tests",
+    "edge: edge case tests",
+    "regression: regression tests",
+]
+
+filterwarnings = ["ignore::pytest.PytestCollectionWarning"]
