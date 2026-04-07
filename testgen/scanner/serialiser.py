@@ -1,3 +1,8 @@
+"""
+Serialisation — converts scanner dataclasses to plain dicts
+so they can be JSON-encoded and handed to the LLM.
+"""
+ 
 from __future__ import annotations
  
 from dataclasses import asdict
@@ -40,3 +45,4 @@ def _param_dict(p: ParamInfo) -> dict[str, Any]:
 def functions_to_payload(functions: list[FunctionInfo]) -> list[dict[str, Any]]:
     """Convert a list of FunctionInfo objects to a JSON-serialisable list."""
     return [function_to_dict(fn) for fn in functions]
+ 

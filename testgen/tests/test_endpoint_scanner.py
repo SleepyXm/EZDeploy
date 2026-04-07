@@ -3,8 +3,7 @@
 import pytest
 from pathlib import Path
  
-from ast_scanner import scan_file
-from serialiser import functions_to_payload
+from test_scanner import scan_file, functions_to_payload
  
 FIXTURE = Path(__file__).parent / "fixtures" / "routes.py"
  
@@ -103,3 +102,4 @@ class TestEndpointDetection:
         payload = functions_to_payload(functions)
         validate = next(d for d in payload if d["name"] == "validate_email")
         assert "http_methods" not in validate
+ 

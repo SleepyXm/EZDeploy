@@ -1,3 +1,5 @@
+"""Tests for the AST scanner — pure Python, no LLM, no API key."""
+ 
 import pytest
 from pathlib import Path
  
@@ -101,3 +103,4 @@ class TestSerialiser:
         tax = next(d for d in payload if d["name"] == "calculate_tax")
         assert "http_methods" not in tax
         assert "route_path" not in tax
+ 

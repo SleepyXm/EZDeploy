@@ -46,5 +46,3 @@ def calculate_tax(amount: Decimal, rate: float, region: str) -> Decimal:
  
 async def fetch_invoice(invoice_id: str, include_items: bool = False) -> dict:
     """Async: fetch invoice data from the billing service."""
-
- 

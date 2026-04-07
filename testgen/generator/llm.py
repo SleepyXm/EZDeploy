@@ -1,3 +1,15 @@
+"""
+LLM generator — sends the structured AST payload to Claude and
+parses the JSON test bank it returns.
+ 
+The LLM's only job here is reasoning:
+  "Given these parameters and types, what inputs are interesting to test?
+   What should the outputs / exceptions be?"
+ 
+It does NOT write pytest code. It does NOT read source files.
+It only sees the compact metadata dict from the scanner.
+"""
+ 
 from __future__ import annotations
  
 import json
@@ -25,16 +37,12 @@ load_dotenv()
  
 SYSTEM_PROMPT = textwrap.dedent("""\
     You are a test case architect for Python projects.
- 
     You receive a JSON description of one or more Python functions/endpoints
     (names, parameters, type annotations, decorators, docstrings).
- 
     Your ONLY job is to output a JSON test bank — a structured list of test cases
     that thoroughly exercise each function. You do NOT write pytest code.
     You do NOT generate imports. You reason about inputs and expected outputs.
- 
     Output format (strict JSON, no markdown, no explanation):
- 
     {
       "functions": [
         {
@@ -53,7 +61,11 @@ SYSTEM_PROMPT = textwrap.dedent("""\
               "expect_exception": "<ExceptionClassName_or_null>",
               "expect_side_effects": [],
               "mocks": [
-                { "target": "<dotted.path.to.patch>", "return_value": <value> }
+                {
+                  "target": "<dotted.path.to.patch>",
+                  "return_value": <json_value_or_null>,
+                  "side_effect": "<ExceptionClassName_or_null>"
+                }
               ],
               "tags": []
             }
@@ -61,7 +73,6 @@ SYSTEM_PROMPT = textwrap.dedent("""\
         }
       ]
     }
- 
     Rules:
     - Generate at minimum: 1 happy path, 2 edge cases, 1 regression case per function.
     - For endpoints also include: wrong HTTP method, missing required fields, auth failure (if auth decorator present).
@@ -69,6 +80,10 @@ SYSTEM_PROMPT = textwrap.dedent("""\
     - For mocks, use the full dotted path that would be passed to unittest.mock.patch.
     - Case ids must be unique within a function, snake_case, concise.
     - Output ONLY the JSON object. No markdown fences. No preamble. No trailing text.
+    - ALL values in the JSON must be valid JSON types: string, number, boolean, null, array, or object.
+    - NEVER write Python expressions anywhere in the JSON. No Exception(...), no None, no True/False — use null, true, false.
+    - mock side_effect must be a string class name (e.g. "RuntimeError") or null. Never Exception("message").
+    - mock return_value must be a JSON value or null. Never a Python expression.
 """)
  
  
@@ -133,7 +148,7 @@ class TestBankGenerator:
         self,
         model: str = "deepseek-chat",
         api_key: str | None = None,
-        batch_size: int = 20,
+        batch_size: int = 3,
     ) -> None:
         key = api_key or os.environ.get("DEEPSEEK_API_KEY")
         if not key:
@@ -192,20 +207,28 @@ class TestBankGenerator:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {
-                        "role": "system",
-                        "content": SYSTEM_PROMPT
-                    },
-                    {
-                        "role": "user",
-                        "content": _build_user_message(batch)
-                    }
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": _build_user_message(batch)}
                 ],
-                max_tokens=4096,
+                max_tokens=8192,
+                response_format={"type": "json_object"},
             )
         except Exception as exc:
             raise RuntimeError(f"[testgen] API error: {exc}") from exc
 
-        message = response.choices[0].message
-        raw = message.content if hasattr(message, "content") else message["content"]
-        return _parse_response(raw)
+        choice = response.choices[0]
+    
+        # Warn if the model hit the token limit mid-response
+        if choice.finish_reason == "length":
+            raise RuntimeError(
+                f"[testgen] LLM response was truncated (finish_reason='length'). "
+                f"Try reducing batch_size or increasing max_tokens."
+            )
+
+        raw = choice.message.content if hasattr(choice.message, "content") else choice.message["content"]
+    
+        try:
+            return _parse_response(raw)
+        except ValueError:
+            print(f"[testgen] Raw LLM response that failed parsing:\n{raw}")
+            raise

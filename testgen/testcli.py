@@ -1,3 +1,13 @@
+"""
+testgen CLI
+ 
+Three commands, three stages — each usable independently:
+ 
+  testgen scan   <path>          → prints/saves the AST payload JSON
+  testgen generate <path>        → scan + LLM → saves tests.json
+  testgen emit   <tests.json>    → tests.json → pytest files
+"""
+ 
 from __future__ import annotations
  
 import argparse
@@ -7,8 +17,8 @@ from pathlib import Path
  
 from scanner.ast_scanner import scan_file, scan_project
 from scanner.serialiser import functions_to_payload
-from generator.llm import TestBankGenerator
 from generator.schema import bank_to_json, bank_from_json
+from generator.llm import TestBankGenerator
 from emitter.pytest_emitter import PytestEmitter
  
  
@@ -74,7 +84,7 @@ def cmd_generate(args: argparse.Namespace) -> int:
             return 1
  
     # --- generate ---
-    gen = TestBankGenerator(model="deepseek-chat", batch_size=args.batch_size)
+    gen = TestBankGenerator(model=args.model, batch_size=args.batch_size)
     bank = gen.generate(payload, verbose=args.verbose)
  
     # --- save ---
@@ -156,14 +166,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_gen.add_argument(
         "--model",
-        default="claude-sonnet-4-20250514",
-        help="Anthropic model to use.",
+        default="deepseek-chat",
+        help="LLM to use.",
     )
     p_gen.add_argument(
         "--batch-size",
         type=int,
-        default=20,
-        help="Max functions per LLM call (default: 20).",
+        default=3,
+        help="Max functions per LLM call (default: 3).",
     )
     p_gen.add_argument(
         "--emit",

@@ -1,3 +1,14 @@
+"""
+Test bank schema.
+ 
+This is the contract between the LLM and the emitter.
+The LLM produces JSON that matches these dataclasses;
+the emitter consumes them to write pytest files.
+ 
+Keeping schema separate from both sides makes it trivial
+to add new languages / frameworks later.
+"""
+ 
 from __future__ import annotations
  
 from dataclasses import dataclass, field
@@ -45,7 +56,7 @@ class FunctionTestBank:
     cases: list[TestCase] = field(default_factory=list)
     class_name: str | None = None           # set for methods
     route_path: str | None = None           # set for endpoints
-    http_methods: list[str] = field(default_factory=list)  # e.g. ["POST"]"""
+    http_methods: list[str] = field(default_factory=list)  # e.g. ["POST"]
  
  
 @dataclass

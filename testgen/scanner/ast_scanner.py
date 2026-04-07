@@ -1,3 +1,11 @@
+"""
+AST scanner — walks Python source files and extracts structured metadata
+about every callable: plain functions, class methods, and decorated
+endpoints (Flask/FastAPI/Django-style).
+ 
+Output is pure data — no LLM involved.
+"""
+ 
 from __future__ import annotations
  
 import ast
@@ -106,7 +114,7 @@ def _parse_decorators(
         names.append(name)
  
         leaf = name.split(".")[-1].lower()
-
+ 
         # Match on the leaf name OR any suffix of the dotted name
         is_route = (
             leaf in _HTTP_VERB_DECORATORS
@@ -114,7 +122,7 @@ def _parse_decorators(
             or name.lower() in _ROUTE_DECORATORS
             or any(name.lower().endswith(f".{r}") for r in _ROUTE_DECORATORS)
         )
-
+ 
         if is_route:
             # Extract path from first positional arg
             if isinstance(dec, ast.Call) and dec.args:
@@ -122,7 +130,7 @@ def _parse_decorators(
                     route_path = ast.literal_eval(dec.args[0])
                 except Exception:
                     route_path = ast.unparse(dec.args[0])
-
+ 
             # Determine HTTP methods
             if leaf in _HTTP_VERB_DECORATORS:
                 http_methods = [leaf.upper()]
@@ -162,6 +170,9 @@ class _FunctionVisitor(ast.NodeVisitor):
  
     # ------------------------------------------------------------------
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        # Skip private/internal classes entirely (e.g. _FakeApp, _Router stubs)
+        if node.name.startswith("_"):
+            return
         self._class_stack.append(node.name)
         self.generic_visit(node)
         self._class_stack.pop()
@@ -335,3 +346,4 @@ def _path_to_module(path: Path, root: Path | None = None) -> str:
         return ".".join(parts)
     except ValueError:
         return path.stem
+ 

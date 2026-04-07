@@ -20,7 +20,7 @@ from generator.schema import (
     ProjectTestBank,
     TestCase,
 )
-from pytest_emitter import (
+from emitter.pytest_emitter import (
     PytestEmitter,
     _render_value,
     _render_test_case,
@@ -396,4 +396,3 @@ class TestPytestEmitter:
         emitter = PytestEmitter(output_dir=tmp_path)
         written = emitter.emit(bank)
         assert written == []
- 

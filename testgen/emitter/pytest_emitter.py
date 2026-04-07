@@ -1,3 +1,13 @@
+"""
+Pytest emitter — reads a ``ProjectTestBank`` and writes ready-to-run
+``test_*.py`` files.
+ 
+No LLM involved. Pure string templates.
+ 
+Designed to be swapped out: a ``JestEmitter``, ``GoTestEmitter``, etc.
+could consume the same ``ProjectTestBank`` schema unchanged.
+"""
+ 
 from __future__ import annotations
  
 import json
@@ -197,7 +207,7 @@ class PytestEmitter:
         """Write test files. Returns list of paths written."""
         self.output_dir.mkdir(parents=True, exist_ok=True)
         written: list[Path] = []
-
+ 
         if self.one_file:
             out = self.output_dir / "test_all.py"
             out.write_text(_render_file(bank.functions), encoding="utf-8")
@@ -207,16 +217,13 @@ class PytestEmitter:
             # Group by module
             by_module: dict[str, list[FunctionTestBank]] = {}
             for fn in bank.functions:
-                # Clean up the module path - strip leading dots/underscores
-                clean_module = fn.module.lstrip("._") if fn.module else "root"
-            
-                by_module.setdefault(clean_module, []).append(fn)
-
+                by_module.setdefault(fn.module, []).append(fn)
+ 
             for module, fns in sorted(by_module.items()):
                 stem = module.replace(".", "_")
                 out = self.output_dir / f"test_{stem}.py"
                 out.write_text(_render_file(fns), encoding="utf-8")
                 print(f"[testgen] wrote {out}  ({len(fns)} function(s))")
                 written.append(out)
-
+ 
         return written
