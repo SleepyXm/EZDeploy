@@ -27,21 +27,24 @@ func run(name string, args ...string) error {
 	return cmd.Run()
 }
 
-// Install installs the requested language runtimes and sets up nginx + certbot.
-func Install(languages []string) error {
+// Install installs the requested language runtimes and infrastructure
+// components (nginx, certbot, docker). nginx and certbot are the default
+// reverse-proxy/SSL stack: if neither is explicitly selected, both are
+// installed automatically as a fallback. If either is explicitly selected,
+// only the selected ones run — no implicit extras.
+func Install(items []string) error {
 	pm, ok := getPackageManager()
 	if !ok {
 		return fmt.Errorf("[!] unsupported OS — cannot install dependencies")
 	}
 	fmt.Printf("[→] Found package manager: %s\n", pm)
 
-	// Normalise into a set for O(1) lookups
-	langs := make(map[string]bool, len(languages))
-	for _, l := range languages {
-		langs[strings.ToLower(strings.TrimSpace(l))] = true
+	set := make(map[string]bool, len(items))
+	for _, it := range items {
+		set[strings.ToLower(strings.TrimSpace(it))] = true
 	}
 
-	if langs["go"] {
+	if set["go"] {
 		fmt.Println("[→] Installing Go...")
 		pkg := "golang"
 		if pm == "apt" {
@@ -52,21 +55,21 @@ func Install(languages []string) error {
 		}
 	}
 
-	if langs["python"] {
+	if set["python"] {
 		fmt.Println("[→] Installing Python...")
 		if err := run(pm, "install", "python3", "python3-pip", "-y"); err != nil {
 			return fmt.Errorf("python install: %w", err)
 		}
 	}
 
-	if langs["node"] {
+	if set["node"] {
 		fmt.Println("[→] Installing Node...")
 		if err := run(pm, "install", "nodejs", "npm", "-y"); err != nil {
 			return fmt.Errorf("node install: %w", err)
 		}
 	}
 
-	if langs["rust"] {
+	if set["rust"] {
 		fmt.Println("[→] Installing Rust...")
 		if err := run("curl", "--proto", "=https", "--tlsv1.2", "-sSf",
 			"https://sh.rustup.rs", "-o", "/tmp/rustup.sh"); err != nil {
@@ -77,6 +80,64 @@ func Install(languages []string) error {
 		}
 	}
 
+	if set["docker"] {
+		if err := installDocker(pm); err != nil {
+			return err
+		}
+	}
+
+	// nginx/certbot are the default reverse-proxy stack. If the user picked
+	// neither explicitly, fall back to installing both.
+	wantNginx := set["nginx"]
+	wantCertbot := set["certbot"]
+	if !wantNginx && !wantCertbot {
+		wantNginx = true
+		wantCertbot = true
+	}
+
+	if wantNginx {
+		if err := installNginx(pm); err != nil {
+			return err
+		}
+	}
+
+	if wantCertbot {
+		fmt.Println("[→] Installing certbot...")
+		if err := run("pip3", "install", "certbot", "certbot-nginx"); err != nil {
+			return fmt.Errorf("certbot install: %w", err)
+		}
+	}
+
+	fmt.Println("[✓] Server ready")
+	return nil
+}
+
+// installDocker installs Docker Engine and enables/starts the service.
+func installDocker(pm string) error {
+	fmt.Println("[→] Installing Docker...")
+	pkg := "docker.io"
+	if pm == "dnf" {
+		pkg = "docker"
+	}
+	if err := run(pm, "install", pkg, "-y"); err != nil {
+		return fmt.Errorf("docker install: %w", err)
+	}
+
+	fmt.Println("[→] Enabling Docker service...")
+	if err := run("systemctl", "enable", "docker"); err != nil {
+		return fmt.Errorf("systemctl enable docker: %w", err)
+	}
+	if err := run("systemctl", "start", "docker"); err != nil {
+		return fmt.Errorf("systemctl start docker: %w", err)
+	}
+
+	fmt.Println("[✓] Docker installed")
+	return nil
+}
+
+// installNginx installs nginx, enables/starts it, and prepares the
+// sites-available/sites-enabled layout + nginx.conf patch.
+func installNginx(pm string) error {
 	fmt.Println("[→] Installing nginx...")
 	if err := run(pm, "install", "nginx", "-y"); err != nil {
 		return fmt.Errorf("nginx install: %w", err)
@@ -100,12 +161,7 @@ func Install(languages []string) error {
 		return err
 	}
 
-	fmt.Println("[→] Installing certbot...")
-	if err := run("pip3", "install", "certbot", "certbot-nginx"); err != nil {
-		return fmt.Errorf("certbot install: %w", err)
-	}
-
-	fmt.Println("[✓] Server ready")
+	fmt.Println("[✓] nginx installed")
 	return nil
 }
 

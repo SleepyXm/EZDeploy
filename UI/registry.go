@@ -27,14 +27,49 @@ func (s ToolStatus) String() string {
 	}
 }
 
+// FieldKind distinguishes how a Field should be collected from the user.
+type FieldKind int
+
+const (
+	FieldText FieldKind = iota
+	FieldMultiSelect
+)
+
+// Field describes a single piece of input a tool needs before it can run.
+type Field struct {
+	Key         string // map key passed into Run
+	Label       string // shown to the user during step-by-step prompt
+	Placeholder string
+	Kind        FieldKind
+	// Options lists the choices for FieldMultiSelect fields.
+	Options []string
+	// AutoFill, if non-nil, pulls this field's value from the active Project
+	// instead of prompting the user. Returns ("", false) if not available.
+	AutoFill func(p *Project) (string, bool)
+}
+
 // Tool wraps a core function as a runnable, validatable registry entry.
 type Tool struct {
 	Name        string
 	Description string
+	// RequiresProject means this tool cannot run until a project is active
+	// (i.e. a repo has been cloned in this session).
+	RequiresProject bool
+	// Fields lists the inputs needed, in prompt order. Fields with a
+	// successful AutoFill are skipped during step-by-step collection.
+	Fields []Field
 	// Validate reports whether the tool's prerequisites are met (e.g. binaries on PATH).
 	Validate func() (ToolStatus, string)
-	// Run executes the tool. Args are tool-specific and resolved by the caller.
+	// Run executes the tool given fully-collected args.
 	Run func(args map[string]string) error
+}
+
+// Project holds the active project context once a repo has been cloned,
+// so downstream tools can auto-fill instead of re-asking.
+type Project struct {
+	Path    string
+	Name    string
+	RepoURL string
 }
 
 // binAvailable checks whether a binary exists on PATH.
@@ -43,43 +78,37 @@ func binAvailable(name string) bool {
 	return err == nil
 }
 
+func fromProjectPath(p *Project) (string, bool) {
+	if p == nil || p.Path == "" {
+		return "", false
+	}
+	return p.Path, true
+}
+
+func fromProjectName(p *Project) (string, bool) {
+	if p == nil || p.Name == "" {
+		return "", false
+	}
+	return p.Name, true
+}
+
+func fromProjectRepoURL(p *Project) (string, bool) {
+	if p == nil || p.RepoURL == "" {
+		return "", false
+	}
+	return p.RepoURL, true
+}
+
 // Registry returns the full set of tools wired to core package functions.
 func Registry() []Tool {
 	return []Tool{
 		{
-			Name:        "DownloadDeps",
-			Description: "Detect project type and install/build dependencies",
-			Validate: func() (ToolStatus, string) {
-				if !binAvailable("git") {
-					return StatusInvalid, "git not found on PATH"
-				}
-				return StatusValid, "ready"
+			Name:            "CloneRepo",
+			Description:     "Clone or pull a repository — establishes the active project",
+			RequiresProject: false,
+			Fields: []Field{
+				{Key: "repoURL", Label: "Repository URL", Placeholder: "https://github.com/user/repo.git"},
 			},
-			Run: func(args map[string]string) error {
-				path := args["projectPath"]
-				if path == "" {
-					return fmt.Errorf("projectPath is required")
-				}
-				return core.DownloadDeps(path)
-			},
-		},
-		{
-			Name:        "SetupEnv",
-			Description: "Interactively collect env vars and write .env",
-			Validate: func() (ToolStatus, string) {
-				return StatusValid, "ready (interactive, runs in current terminal)"
-			},
-			Run: func(args map[string]string) error {
-				path := args["projectPath"]
-				if path == "" {
-					return fmt.Errorf("projectPath is required")
-				}
-				return core.SetupEnv(path)
-			},
-		},
-		{
-			Name:        "CloneRepo",
-			Description: "Clone or pull a repository into the projects dir",
 			Validate: func() (ToolStatus, string) {
 				if !binAvailable("git") {
 					return StatusInvalid, "git not found on PATH"
@@ -96,8 +125,56 @@ func Registry() []Tool {
 			},
 		},
 		{
-			Name:        "Install",
-			Description: "Install language runtimes + nginx + certbot",
+			Name:            "DownloadDeps",
+			Description:     "Detect project type and install/build dependencies",
+			RequiresProject: true,
+			Fields: []Field{
+				{Key: "projectPath", Label: "Project path", AutoFill: fromProjectPath},
+			},
+			Validate: func() (ToolStatus, string) {
+				if !binAvailable("git") {
+					return StatusInvalid, "git not found on PATH"
+				}
+				return StatusValid, "ready"
+			},
+			Run: func(args map[string]string) error {
+				path := args["projectPath"]
+				if path == "" {
+					return fmt.Errorf("projectPath is required")
+				}
+				return core.DownloadDeps(path)
+			},
+		},
+		{
+			Name:            "SetupEnv",
+			Description:     "Interactively collect env vars and write .env",
+			RequiresProject: true,
+			Fields: []Field{
+				{Key: "projectPath", Label: "Project path", AutoFill: fromProjectPath},
+			},
+			Validate: func() (ToolStatus, string) {
+				return StatusValid, "ready (interactive, runs in current terminal)"
+			},
+			Run: func(args map[string]string) error {
+				path := args["projectPath"]
+				if path == "" {
+					return fmt.Errorf("projectPath is required")
+				}
+				return core.SetupEnv(path)
+			},
+		},
+		{
+			Name:            "Install",
+			Description:     "Install language runtimes + infra components",
+			RequiresProject: false,
+			Fields: []Field{
+				{
+					Key:     "items",
+					Label:   "Select components to install",
+					Kind:    FieldMultiSelect,
+					Options: []string{"go", "node", "python", "rust", "nginx", "certbot", "docker"},
+				},
+			},
 			Validate: func() (ToolStatus, string) {
 				os := core.GetOS()
 				switch os.ID {
@@ -108,16 +185,22 @@ func Registry() []Tool {
 				}
 			},
 			Run: func(args map[string]string) error {
-				langs := args["languages"]
-				if langs == "" {
-					return fmt.Errorf("languages is required (comma-separated)")
-				}
-				return core.Install(splitCSV(langs))
+				items := args["items"]
+				// Empty selection is valid — core.Install falls back to the
+				// default nginx+certbot stack when nothing else is picked.
+				return core.Install(splitCSV(items))
 			},
 		},
 		{
-			Name:        "CreateNginxConfig",
-			Description: "Write nginx server block, symlink, reload, provision SSL",
+			Name:            "CreateNginxConfig",
+			Description:     "Write nginx server block, symlink, reload, provision SSL",
+			RequiresProject: true,
+			Fields: []Field{
+				{Key: "projectName", Label: "Project name", AutoFill: fromProjectName},
+				{Key: "port", Label: "Port", Placeholder: "8000"},
+				{Key: "domain", Label: "Domain", Placeholder: "example.com"},
+				{Key: "email", Label: "Email (for SSL)", Placeholder: "you@example.com"},
+			},
 			Validate: func() (ToolStatus, string) {
 				if !binAvailable("nginx") {
 					return StatusInvalid, "nginx not found on PATH"
@@ -137,8 +220,10 @@ func Registry() []Tool {
 			},
 		},
 		{
-			Name:        "GetOS",
-			Description: "Detect current OS and distro ID",
+			Name:            "GetOS",
+			Description:     "Detect current OS and distro ID",
+			RequiresProject: false,
+			Fields:          nil,
 			Validate: func() (ToolStatus, string) {
 				return StatusValid, "always available"
 			},
@@ -149,8 +234,10 @@ func Registry() []Tool {
 			},
 		},
 		{
-			Name:        "GetNextPort",
-			Description: "Compute the next available port from the registry",
+			Name:            "GetNextPort",
+			Description:     "Compute the next available port from the registry",
+			RequiresProject: false,
+			Fields:          nil,
 			Validate: func() (ToolStatus, string) {
 				return StatusValid, "always available"
 			},
@@ -164,8 +251,16 @@ func Registry() []Tool {
 			},
 		},
 		{
-			Name:        "RegisterProject",
-			Description: "Add or update a project entry in the registry",
+			Name:            "RegisterProject",
+			Description:     "Add or update a project entry in the registry",
+			RequiresProject: true,
+			Fields: []Field{
+				{Key: "projectName", Label: "Project name", AutoFill: fromProjectName},
+				{Key: "port", Label: "Port", Placeholder: "8000"},
+				{Key: "domain", Label: "Domain", Placeholder: "example.com"},
+				{Key: "repoURL", Label: "Repo URL", AutoFill: fromProjectRepoURL},
+				{Key: "branch", Label: "Branch", Placeholder: "main"},
+			},
 			Validate: func() (ToolStatus, string) {
 				return StatusValid, "ready"
 			},
@@ -179,8 +274,12 @@ func Registry() []Tool {
 			},
 		},
 		{
-			Name:        "UnregisterProject",
-			Description: "Remove a project entry from the registry",
+			Name:            "UnregisterProject",
+			Description:     "Remove a project entry from the registry",
+			RequiresProject: true,
+			Fields: []Field{
+				{Key: "projectName", Label: "Project name", AutoFill: fromProjectName},
+			},
 			Validate: func() (ToolStatus, string) {
 				return StatusValid, "ready"
 			},

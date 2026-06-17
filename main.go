@@ -7,9 +7,15 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"EZDeploy/UI"
+	"EZDeploy/core"
 )
 
 func main() {
+	if err := core.UpdateSystem(); err != nil {
+		fmt.Fprintln(os.Stderr, "system update failed, aborting:", err)
+		os.Exit(1)
+	}
+
 	p := tea.NewProgram(UI.NewModel())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "error running TUI:", err)
