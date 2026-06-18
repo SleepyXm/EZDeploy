@@ -15,7 +15,7 @@ func SetupEnv(projectPath string) error {
 	envValues := map[string]string{}
 
 	for {
-		key, err := input("    Key: ")
+		key, err := input("Key: ")
 		if err != nil {
 			return err
 		}
@@ -25,7 +25,7 @@ func SetupEnv(projectPath string) error {
 			break
 		}
 
-		value, err := input("    Value: ")
+		value, err := input("Value: ")
 		if err != nil {
 			return err
 		}
@@ -74,7 +74,7 @@ func input(prompt string) (string, error) {
 
 		switch ch {
 		case '\n', '\r':
-			fmt.Println()
+			fmt.Print("\r\n")
 			return b.String(), nil
 
 		case 127, 8:

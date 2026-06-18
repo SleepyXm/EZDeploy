@@ -5,6 +5,7 @@ import (
 	"os/exec"
 
 	"EZDeploy/core"
+	"EZDeploy/services"
 )
 
 // ToolStatus represents the validity state of a registered tool.
@@ -271,6 +272,8 @@ func Registry() []Tool {
 				{Key: "domain", Label: "Domain", Placeholder: "example.com"},
 				{Key: "repoURL", Label: "Repo URL", AutoFill: fromProjectRepoURL},
 				{Key: "branch", Label: "Branch", Placeholder: "main"},
+				{Key: "serviceName", Label: "Service name", Placeholder: "ezdeploy-myapp"},
+				{Key: "startCommand", Label: "Start command", Placeholder: "npm start"},
 			},
 			Validate: func() (ToolStatus, string) {
 				return StatusValid, "ready"
@@ -282,11 +285,13 @@ func Registry() []Tool {
 					return fmt.Errorf("projectName and port are required")
 				}
 				return core.RegisterProject(args["projectName"], core.Project{
-					Port:    port,
-					Domain:  args["domain"],
-					RepoURL: args["repoURL"],
-					Branch:  args["branch"],
-					Status:  "registered",
+					Port:         port,
+					Domain:       args["domain"],
+					RepoURL:      args["repoURL"],
+					Branch:       args["branch"],
+					ServiceName:  args["serviceName"],
+					StartCommand: args["startCommand"],
+					Status:       "registered",
 				})
 			},
 		},
@@ -305,6 +310,99 @@ func Registry() []Tool {
 					return fmt.Errorf("projectName is required")
 				}
 				return core.UnregisterProject(args["projectName"])
+			},
+		},
+		{
+			Name:            "StartService",
+			Description:     "Start the active project service",
+			RequiresProject: true,
+			Fields: []Field{
+				{Key: "projectName", Label: "Project name", AutoFill: fromProjectName},
+			},
+			Validate: func() (ToolStatus, string) {
+				if !binAvailable("systemctl") {
+					return StatusInvalid, "systemctl not found"
+				}
+				return StatusValid, "ready"
+			},
+			Run: func(args map[string]string) error {
+				return services.Start(args["projectName"])
+			},
+		},
+		{
+			Name:            "StopService",
+			Description:     "Stop the active project service",
+			RequiresProject: true,
+			Fields: []Field{
+				{Key: "projectName", Label: "Project name", AutoFill: fromProjectName},
+			},
+			Validate: func() (ToolStatus, string) {
+				if !binAvailable("systemctl") {
+					return StatusInvalid, "systemctl not found"
+				}
+				return StatusValid, "ready"
+			},
+			Run: func(args map[string]string) error {
+				return services.Stop(args["projectName"])
+			},
+		},
+		{
+			Name:            "RestartService",
+			Description:     "Restart the active project service",
+			RequiresProject: true,
+			Fields: []Field{
+				{Key: "projectName", Label: "Project name", AutoFill: fromProjectName},
+			},
+			Validate: func() (ToolStatus, string) {
+				if !binAvailable("systemctl") {
+					return StatusInvalid, "systemctl not found"
+				}
+				return StatusValid, "ready"
+			},
+			Run: func(args map[string]string) error {
+				return services.Restart(args["projectName"])
+			},
+		},
+		{
+			Name:            "ReloadService",
+			Description:     "Reload the active project service",
+			RequiresProject: true,
+			Fields: []Field{
+				{Key: "projectName", Label: "Project name", AutoFill: fromProjectName},
+			},
+			Validate: func() (ToolStatus, string) {
+				if !binAvailable("systemctl") {
+					return StatusInvalid, "systemctl not found"
+				}
+				return StatusValid, "ready"
+			},
+			Run: func(args map[string]string) error {
+				return services.Reload(args["projectName"])
+			},
+		},
+
+		{
+			Name:            "Metrics",
+			Description:     "Show live project and system metrics",
+			RequiresProject: false,
+			Fields:          nil,
+			Validate: func() (ToolStatus, string) {
+				if !binAvailable("systemctl") {
+					return StatusInvalid, "systemctl not found"
+				}
+				if !binAvailable("top") {
+					return StatusInvalid, "top not found"
+				}
+				if !binAvailable("free") {
+					return StatusInvalid, "free not found"
+				}
+				if !binAvailable("df") {
+					return StatusInvalid, "df not found"
+				}
+				return StatusValid, "ready"
+			},
+			Run: func(args map[string]string) error {
+				return services.Metrics()
 			},
 		},
 	}
