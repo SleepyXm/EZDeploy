@@ -102,9 +102,8 @@ func Install(items []string) error {
 	}
 
 	if wantCertbot {
-		fmt.Println("[→] Installing certbot...")
-		if err := run("pip3", "install", "certbot", "certbot-nginx"); err != nil {
-			return fmt.Errorf("certbot install: %w", err)
+		if err := installCertbot(pm); err != nil {
+			return err
 		}
 	}
 
@@ -193,5 +192,30 @@ func patchNginxConf() error {
 	}
 
 	fmt.Println("[✓] Added sites-enabled to nginx.conf")
+	return nil
+}
+
+func installCertbot(pm string) error {
+	fmt.Println("[→] Installing certbot...")
+
+	switch pm {
+	case "apt":
+		// Simple, dependency-safe path for Ubuntu/Debian.
+		if err := run(pm, "install", "certbot", "python3-certbot-nginx", "-y"); err != nil {
+			return fmt.Errorf("certbot apt install: %w", err)
+		}
+
+	case "dnf":
+		// Works only where these packages are available.
+		// Amazon Linux may need extra repo handling later.
+		if err := run(pm, "install", "certbot", "python3-certbot-nginx", "-y"); err != nil {
+			return fmt.Errorf("certbot dnf install: %w", err)
+		}
+
+	default:
+		return fmt.Errorf("certbot install: unsupported package manager %q", pm)
+	}
+
+	fmt.Println("[✓] certbot installed")
 	return nil
 }
