@@ -36,9 +36,14 @@ type systemStats struct {
 func renderMetrics(registry core.Registry, stats systemStats) {
 	clear()
 
-	fmt.Println("\n[→] EZDeploy Metrics\n")
-	fmt.Printf("  %-20s %-12s %-8s %-12s %s\n", "PROJECT", "STATUS", "PORT", "MEMORY", "STARTED")
-	fmt.Printf("  %-20s %-12s %-8s %-12s %s\n", "-------", "------", "----", "------", "-------")
+	var b strings.Builder
+
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "[→] EZDeploy Metrics")
+	fmt.Fprintln(&b)
+
+	fmt.Fprintf(&b, "  %-20s %-12s %-8s %-12s %s\n", "PROJECT", "STATUS", "PORT", "MEMORY", "STARTED")
+	fmt.Fprintf(&b, "  %-20s %-12s %-8s %-12s %s\n", "-------", "------", "----", "------", "-------")
 
 	for name, info := range registry {
 		serviceName := info.ServiceName
@@ -60,13 +65,17 @@ func renderMetrics(registry core.Registry, stats systemStats) {
 			port = strconv.Itoa(info.Port)
 		}
 
-		fmt.Printf("  %-20s %-12s %-8s %-12s %s\n", name, statusDisplay, port, memory, started)
+		fmt.Fprintf(&b, "  %-20s %-12s %-8s %-12s %s\n", name, statusDisplay, port, memory, started)
 	}
 
-	fmt.Printf("\n  CPU:  %s\n", stats.CPU)
-	fmt.Printf("  RAM:  %s\n", stats.RAM)
-	fmt.Printf("  Disk: %s\n", stats.Disk)
-	fmt.Println("\n  refreshing every 5s — ctrl+c to exit\n")
+	fmt.Fprintf(&b, "\n  CPU:  %s\n", stats.CPU)
+	fmt.Fprintf(&b, "  RAM:  %s\n", stats.RAM)
+	fmt.Fprintf(&b, "  Disk: %s\n", stats.Disk)
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "  refreshing every 5s — ctrl+c to exit")
+	fmt.Fprintln(&b)
+
+	terminalPrint(b.String())
 }
 
 func getServiceStatus(serviceName string) string {
@@ -207,6 +216,14 @@ func commandOutput(name string, args ...string) (string, error) {
 }
 
 func clear() {
-	fmt.Print("\033[H\033[2J")
+	fmt.Print("\033[H\033[2J\r")
 	_ = os.Stdout.Sync()
+}
+
+func terminalPrint(s string) {
+	// Normalize existing CRLF first so we do not create \r\r\n.
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\n", "\r\n")
+
+	fmt.Print(s)
 }

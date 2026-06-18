@@ -1,0 +1,140 @@
+name: envs
+
+languages:
+  - name: go
+    extensions: [".go"]
+
+  - name: python
+    extensions: [".py"]
+
+  - name: javascript
+    extensions: [".js", ".jsx", ".mjs", ".cjs"]
+
+  - name: typescript
+    extensions: [".ts", ".tsx"]
+
+  - name: rust
+    extensions: [".rs"]
+
+  - name: ruby
+    extensions: [".rb"]
+
+  - name: java
+    extensions: [".java"]
+
+  - name: kotlin
+    extensions: [".kt", ".kts"]
+
+  - name: php
+    extensions: [".php"]
+
+  - name: shell
+    extensions: [".sh", ".bash", ".zsh"]
+
+ignored_dirs:
+  - .git
+  - node_modules
+  - vendor
+  - dist
+  - build
+  - .next
+  - .nuxt
+  - target
+  - coverage
+  - __pycache__
+  - .venv
+  - venv
+
+scan_files:
+  - ".env"
+  - ".env.*"
+  - "Dockerfile"
+  - "docker-compose.yml"
+  - "docker-compose.yaml"
+  - "compose.yml"
+  - "compose.yaml"
+
+scan_extensions:
+  - ".yml"
+  - ".yaml"
+  - ".json"
+  - ".toml"
+
+env_rules:
+  - name: env-file-key
+    files: [".env", ".env.*"]
+    pattern: '^\s*(?:export\s+)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*='
+
+  - name: go-os-getenv
+    language: go
+    pattern: '\bos\.(?:Getenv|LookupEnv)\(\s*["`](?P<name>[A-Za-z_][A-Za-z0-9_]*)["`]\s*\)'
+
+  - name: python-os-getenv
+    language: python
+    pattern: '\bos\.getenv\(\s*["`](?P<name>[A-Za-z_][A-Za-z0-9_]*)["`]'
+
+  - name: python-os-environ-index
+    language: python
+    pattern: '\bos\.environ\[\s*["`](?P<name>[A-Za-z_][A-Za-z0-9_]*)["`]\s*\]'
+
+  - name: python-os-environ-get
+    language: python
+    pattern: '\bos\.environ\.get\(\s*["`](?P<name>[A-Za-z_][A-Za-z0-9_]*)["`]'
+
+  - name: node-process-env-dot
+    language: javascript
+    pattern: '\bprocess\.env\.(?P<name>[A-Za-z_][A-Za-z0-9_]*)'
+
+  - name: node-process-env-index
+    language: javascript
+    pattern: '\bprocess\.env\[\s*["`](?P<name>[A-Za-z_][A-Za-z0-9_]*)["`]\s*\]'
+
+  - name: ts-process-env-dot
+    language: typescript
+    pattern: '\bprocess\.env\.(?P<name>[A-Za-z_][A-Za-z0-9_]*)'
+
+  - name: ts-process-env-index
+    language: typescript
+    pattern: '\bprocess\.env\[\s*["`](?P<name>[A-Za-z_][A-Za-z0-9_]*)["`]\s*\]'
+
+  - name: vite-import-meta-env
+    languages: [javascript, typescript]
+    pattern: '\bimport\.meta\.env\.(?P<name>[A-Za-z_][A-Za-z0-9_]*)'
+
+  - name: deno-env-get
+    languages: [javascript, typescript]
+    pattern: '\bDeno\.env\.get\(\s*["`](?P<name>[A-Za-z_][A-Za-z0-9_]*)["`]\s*\)'
+
+  - name: rust-env-var
+    language: rust
+    pattern: '\b(?:std::)?env::var\(\s*["`](?P<name>[A-Za-z_][A-Za-z0-9_]*)["`]\s*\)'
+
+  - name: ruby-env-index
+    language: ruby
+    pattern: '\bENV\[\s*["`](?P<name>[A-Za-z_][A-Za-z0-9_]*)["`]\s*\]'
+
+  - name: ruby-env-fetch
+    language: ruby
+    pattern: '\bENV\.fetch\(\s*["`](?P<name>[A-Za-z_][A-Za-z0-9_]*)["`]'
+
+  - name: jvm-system-getenv
+    languages: [java, kotlin]
+    pattern: '\bSystem\.getenv\(\s*["`](?P<name>[A-Za-z_][A-Za-z0-9_]*)["`]\s*\)'
+
+  - name: php-getenv
+    language: php
+    pattern: '\bgetenv\(\s*["`](?P<name>[A-Za-z_][A-Za-z0-9_]*)["`]\s*\)'
+
+  - name: php-env-superglobal
+    language: php
+    pattern: '\$_ENV\[\s*["`](?P<name>[A-Za-z_][A-Za-z0-9_]*)["`]\s*\]'
+
+  - name: config-env-interpolation
+    extensions: [".yml", ".yaml", ".json", ".toml"]
+    files:
+      - Dockerfile
+      - docker-compose.yml
+      - docker-compose.yaml
+      - compose.yml
+      - compose.yaml
+    pattern: '\$\{(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?:[:?][-?][^}]*)?\}'

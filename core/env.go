@@ -1,18 +1,41 @@
 package core
 
 import (
+	"EZDeploy/UI/pretty"
+	"EZDeploy/walker"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
 func SetupEnv(projectPath string) error {
 	envOutput := filepath.Join(projectPath, ".env")
-
-	fmt.Println("\n[→] Enter environment variables (leave key blank when done):\n")
-
 	envValues := map[string]string{}
+
+	report, err := walker.ScanDefault(projectPath)
+	if err != nil {
+		pretty.Printf("[!] Env discovery skipped: %v\n", err)
+	} else {
+		printEnvDiscoveryReport(report)
+
+		for _, key := range report.UniqueEnvNames() {
+			value, err := input(fmt.Sprintf("%s (blank to skip): ", key))
+			if err != nil {
+				return err
+			}
+
+			value = strings.TrimSpace(value)
+			if value == "" {
+				continue
+			}
+
+			envValues[key] = value
+		}
+	}
+
+	pretty.Println("\n[→] Add extra environment variables (leave key blank when done):\n")
 
 	for {
 		key, err := input("Key: ")
@@ -44,8 +67,15 @@ func SetupEnv(projectPath string) error {
 	}
 	defer f.Close()
 
-	for key, value := range envValues {
-		if _, err := fmt.Fprintf(f, "%s=%s\n", key, value); err != nil {
+	keys := make([]string, 0, len(envValues))
+	for key := range envValues {
+		keys = append(keys, key)
+	}
+
+	sort.Strings(keys)
+
+	for _, key := range keys {
+		if _, err := fmt.Fprintf(f, "%s=%s\n", key, envValues[key]); err != nil {
 			return fmt.Errorf("write .env: %w", err)
 		}
 	}
@@ -90,4 +120,34 @@ func input(prompt string) (string, error) {
 			fmt.Print(string(ch))
 		}
 	}
+}
+
+func printEnvDiscoveryReport(report walker.Report) {
+	if len(report.Languages) > 0 {
+		pretty.Println("\n[→] Detected languages:")
+
+		langs := make([]string, 0, len(report.Languages))
+		for lang := range report.Languages {
+			langs = append(langs, lang)
+		}
+
+		sort.Strings(langs)
+
+		for _, lang := range langs {
+			fmt.Printf("  - %s: %d files\n", lang, report.Languages[lang])
+		}
+	}
+
+	if len(report.EnvHits) == 0 {
+		pretty.Println("\n[→] No environment variables discovered automatically.")
+		return
+	}
+
+	pretty.Println("\n[→] Discovered environment variables:")
+
+	for _, hit := range report.EnvHits {
+		pretty.Printf("  - %-30s %s:%d  [%s]\n", hit.Name, hit.Path, hit.Line, hit.Rule)
+	}
+
+	pretty.Println("\n[→] Enter values for discovered variables:")
 }
