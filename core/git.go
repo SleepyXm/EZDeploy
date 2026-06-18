@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-const CloneDir = "/opt/EZDeploy/projects"
+const CloneDir = "../EZDeploy/projects"
 
 // CloneRepo clones a repository into CloneDir, or pulls the latest
 // changes if it already exists. Returns the absolute path to the project.

@@ -1,53 +1,93 @@
 package core
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
-// SetupEnv interactively collects key/value pairs from stdin and writes
-// them to a .env file in projectPath.
 func SetupEnv(projectPath string) error {
-	fmt.Println("\n[→] Enter environment variables (leave key blank when done):")
+	envOutput := filepath.Join(projectPath, ".env")
 
-	scanner := bufio.NewScanner(os.Stdin)
-	var lines []string
+	fmt.Println("\n[→] Enter environment variables (leave key blank when done):\n")
+
+	envValues := map[string]string{}
 
 	for {
-		fmt.Print("    Key: ")
-		scanner.Scan()
-		key := strings.TrimSpace(scanner.Text())
+		key, err := input("    Key: ")
+		if err != nil {
+			return err
+		}
+
+		key = strings.TrimSpace(key)
 		if key == "" {
 			break
 		}
 
-		fmt.Print("    Value: ")
-		scanner.Scan()
-		value := strings.TrimSpace(scanner.Text())
-		lines = append(lines, fmt.Sprintf("%s=%s", key, value))
+		value, err := input("    Value: ")
+		if err != nil {
+			return err
+		}
+
+		envValues[key] = strings.TrimSpace(value)
 	}
 
-	if len(lines) == 0 {
+	if len(envValues) == 0 {
 		fmt.Println("[!] No environment variables entered, skipping...")
 		return nil
 	}
 
-	envPath := filepath.Join(projectPath, ".env")
-	f, err := os.Create(envPath)
+	f, err := os.Create(envOutput)
 	if err != nil {
 		return fmt.Errorf("create .env: %w", err)
 	}
 	defer f.Close()
 
-	for _, line := range lines {
-		if _, err := fmt.Fprintln(f, line); err != nil {
+	for key, value := range envValues {
+		if _, err := fmt.Fprintf(f, "%s=%s\n", key, value); err != nil {
 			return fmt.Errorf("write .env: %w", err)
 		}
 	}
 
 	fmt.Println("\n[✓] .env file created")
 	return nil
+}
+
+func input(prompt string) (string, error) {
+	fmt.Print(prompt)
+
+	var b strings.Builder
+	buf := make([]byte, 1)
+
+	for {
+		n, err := os.Stdin.Read(buf)
+		if err != nil {
+			return "", err
+		}
+
+		if n == 0 {
+			continue
+		}
+
+		ch := buf[0]
+
+		switch ch {
+		case '\n', '\r':
+			fmt.Println()
+			return b.String(), nil
+
+		case 127, 8:
+			current := b.String()
+			if len(current) > 0 {
+				b.Reset()
+				b.WriteString(current[:len(current)-1])
+				fmt.Print("\b \b")
+			}
+
+		default:
+			b.WriteByte(ch)
+			fmt.Print(string(ch))
+		}
+	}
 }

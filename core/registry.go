@@ -13,6 +13,7 @@ const (
 
 // Project holds the metadata for a deployed project.
 type Project struct {
+	Path    string `json:"path"`
 	Port    int    `json:"port"`
 	Domain  string `json:"domain"`
 	RepoURL string `json:"repo_url"`
@@ -67,22 +68,51 @@ func GetNextPort() (int, error) {
 }
 
 // RegisterProject adds or updates a project entry in the registry.
-func RegisterProject(projectName string, port int, domain, repoURL, branch string) error {
+func RegisterProject(projectName string, project Project) error {
 	reg, err := loadRegistry()
 	if err != nil {
 		return err
 	}
-	reg[projectName] = Project{
-		Port:    port,
-		Domain:  domain,
-		RepoURL: repoURL,
-		Branch:  branch,
-		Status:  "running",
+
+	existing := reg[projectName]
+
+	if project.Path != "" {
+		existing.Path = project.Path
 	}
+
+	if project.Port != 0 {
+		existing.Port = project.Port
+	} else if existing.Port == 0 {
+		port, err := GetNextPort()
+		if err != nil {
+			return err
+		}
+		existing.Port = port
+	}
+
+	if project.Domain != "" {
+		existing.Domain = project.Domain
+	}
+
+	if project.RepoURL != "" {
+		existing.RepoURL = project.RepoURL
+	}
+
+	if project.Branch != "" {
+		existing.Branch = project.Branch
+	}
+
+	if project.Status != "" {
+		existing.Status = project.Status
+	}
+
+	reg[projectName] = existing
+
 	if err := saveRegistry(reg); err != nil {
 		return err
 	}
-	fmt.Printf("[✓] Registered %s on port %d\n", projectName, port)
+
+	fmt.Printf("[✓] Registered %s on port %d\n", projectName, existing.Port)
 	return nil
 }
 
@@ -107,5 +137,58 @@ func UnregisterProject(projectName string) error {
 		return err
 	}
 	fmt.Printf("[✓] Unregistered %s\n", projectName)
+	return nil
+}
+
+func EnsureProject(projectName, path, repoURL, branch string) error {
+	reg, err := loadRegistry()
+	if err != nil {
+		return err
+	}
+
+	existing, ok := reg[projectName]
+	if !ok {
+		port, err := GetNextPort()
+		if err != nil {
+			return err
+		}
+
+		reg[projectName] = Project{
+			Path:    path,
+			Port:    port,
+			Domain:  "",
+			RepoURL: repoURL,
+			Branch:  branch,
+			Status:  "cloned",
+		}
+
+		if err := saveRegistry(reg); err != nil {
+			return err
+		}
+
+		fmt.Printf("[✓] Added %s to registry on port %d\n", projectName, port)
+		return nil
+	}
+
+	if existing.Path == "" {
+		existing.Path = path
+	}
+	if existing.RepoURL == "" {
+		existing.RepoURL = repoURL
+	}
+	if existing.Branch == "" {
+		existing.Branch = branch
+	}
+	if existing.Status == "" {
+		existing.Status = "cloned"
+	}
+
+	reg[projectName] = existing
+
+	if err := saveRegistry(reg); err != nil {
+		return err
+	}
+
+	fmt.Printf("[✓] Registry already has %s\n", projectName)
 	return nil
 }

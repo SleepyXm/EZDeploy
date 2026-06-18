@@ -1,6 +1,7 @@
 package UI
 
 import (
+	"EZDeploy/core"
 	"fmt"
 	"strings"
 
@@ -236,10 +237,22 @@ func (m *Model) runActiveTool() {
 		if t.Name == "CloneRepo" {
 			repoURL := m.collected["repoURL"]
 			name := repoNameFromURL(repoURL)
+			path := cloneDirJoin(name)
+
 			m.project = &Project{
-				Path:    cloneDirJoin(name),
+				Path:    path,
 				Name:    name,
 				RepoURL: repoURL,
+			}
+
+			if err := core.RegisterProject(name, core.Project{
+				Path:    path,
+				RepoURL: repoURL,
+				Branch:  "main",
+				Status:  "cloned",
+			}); err != nil {
+				m.lastOK = false
+				m.lastMsg = fmt.Sprintf("CloneRepo completed but registry update failed: %v", err)
 			}
 		}
 	}
@@ -556,4 +569,4 @@ func cloneDirJoin(repoName string) string {
 	return strings.TrimRight(cloneDirConst, "/") + "/" + repoName
 }
 
-const cloneDirConst = "/opt/EZDeploy/projects"
+const cloneDirConst = "../EZDeploy/projects"

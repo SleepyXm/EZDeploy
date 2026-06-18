@@ -33,6 +33,7 @@ type FieldKind int
 const (
 	FieldText FieldKind = iota
 	FieldMultiSelect
+	FieldKeyValueList
 )
 
 // Field describes a single piece of input a tool needs before it can run.
@@ -153,7 +154,7 @@ func Registry() []Tool {
 				{Key: "projectPath", Label: "Project path", AutoFill: fromProjectPath},
 			},
 			Validate: func() (ToolStatus, string) {
-				return StatusValid, "ready (interactive, runs in current terminal)"
+				return StatusValid, "ready"
 			},
 			Run: func(args map[string]string) error {
 				path := args["projectPath"]
@@ -213,10 +214,20 @@ func Registry() []Tool {
 			Run: func(args map[string]string) error {
 				port := 0
 				fmt.Sscanf(args["port"], "%d", &port)
+
 				if args["projectName"] == "" || port == 0 || args["domain"] == "" || args["email"] == "" {
 					return fmt.Errorf("projectName, port, domain, and email are required")
 				}
-				return core.CreateNginxConfig(args["projectName"], port, args["domain"], args["email"])
+
+				if err := core.CreateNginxConfig(args["projectName"], port, args["domain"], args["email"]); err != nil {
+					return err
+				}
+
+				return core.RegisterProject(args["projectName"], core.Project{
+					Port:   port,
+					Domain: args["domain"],
+					Status: "deployed",
+				})
 			},
 		},
 		{
@@ -270,7 +281,13 @@ func Registry() []Tool {
 				if args["projectName"] == "" || port == 0 {
 					return fmt.Errorf("projectName and port are required")
 				}
-				return core.RegisterProject(args["projectName"], port, args["domain"], args["repoURL"], args["branch"])
+				return core.RegisterProject(args["projectName"], core.Project{
+					Port:    port,
+					Domain:  args["domain"],
+					RepoURL: args["repoURL"],
+					Branch:  args["branch"],
+					Status:  "registered",
+				})
 			},
 		},
 		{
