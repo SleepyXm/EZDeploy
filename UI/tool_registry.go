@@ -53,15 +53,20 @@ type Field struct {
 // Tool wraps a core function as a runnable, validatable registry entry.
 type Tool struct {
 	Name        string
+	Category    string
 	Description string
+
 	// RequiresProject means this tool cannot run until a project is active
 	// (i.e. a repo has been cloned in this session).
 	RequiresProject bool
+
 	// Fields lists the inputs needed, in prompt order. Fields with a
 	// successful AutoFill are skipped during step-by-step collection.
 	Fields []Field
+
 	// Validate reports whether the tool's prerequisites are met (e.g. binaries on PATH).
 	Validate func() (ToolStatus, string)
+
 	// Run executes the tool given fully-collected args.
 	Run func(args map[string]string) error
 }
@@ -106,6 +111,7 @@ func Registry() []Tool {
 	return []Tool{
 		{
 			Name:            "CloneRepo",
+			Category:        "Project Management",
 			Description:     "Clone or pull a repository — establishes the active project",
 			RequiresProject: false,
 			Fields: []Field{
@@ -128,6 +134,7 @@ func Registry() []Tool {
 		},
 		{
 			Name:            "DownloadDeps",
+			Category:        "Project Management",
 			Description:     "Detect project type and install/build dependencies",
 			RequiresProject: true,
 			Fields: []Field{
@@ -149,6 +156,7 @@ func Registry() []Tool {
 		},
 		{
 			Name:            "SetupEnv",
+			Category:        "Project Management",
 			Description:     "Interactively collect env vars and write .env",
 			RequiresProject: true,
 			Fields: []Field{
@@ -195,6 +203,7 @@ func Registry() []Tool {
 		},
 		{
 			Name:            "CreateNginxConfig",
+			Category:        "Service Management",
 			Description:     "Write nginx server block, symlink, reload, provision SSL",
 			RequiresProject: true,
 			Fields: []Field{
@@ -264,6 +273,7 @@ func Registry() []Tool {
 		},
 		{
 			Name:            "RegisterProject",
+			Category:        "Project Management",
 			Description:     "Add or update a project entry in the registry",
 			RequiresProject: true,
 			Fields: []Field{
@@ -297,6 +307,7 @@ func Registry() []Tool {
 		},
 		{
 			Name:            "UnregisterProject",
+			Category:        "Project Management",
 			Description:     "Remove a project entry from the registry",
 			RequiresProject: true,
 			Fields: []Field{
@@ -313,7 +324,40 @@ func Registry() []Tool {
 			},
 		},
 		{
+			Name:            "CreateService",
+			Description:     "Create a systemd service for the active project",
+			RequiresProject: true,
+			Fields: []Field{
+				{Key: "projectName", Label: "Project name", AutoFill: fromProjectName},
+				{Key: "projectPath", Label: "Project path", AutoFill: fromProjectPath},
+				{Key: "port", Label: "Port", Placeholder: "9000"},
+				{Key: "startCommand", Label: "Start command", Placeholder: "npm start"},
+			},
+			Validate: func() (ToolStatus, string) {
+				if !binAvailable("systemctl") {
+					return StatusInvalid, "systemctl not found"
+				}
+				return StatusValid, "ready"
+			},
+			Run: func(args map[string]string) error {
+				port := 0
+				fmt.Sscanf(args["port"], "%d", &port)
+
+				if args["projectName"] == "" || args["projectPath"] == "" || port == 0 || args["startCommand"] == "" {
+					return fmt.Errorf("projectName, projectPath, port, and startCommand are required")
+				}
+
+				return services.Create(
+					args["projectName"],
+					args["projectPath"],
+					args["startCommand"],
+					port,
+				)
+			},
+		},
+		{
 			Name:            "StartService",
+			Category:        "Service Management",
 			Description:     "Start the active project service",
 			RequiresProject: true,
 			Fields: []Field{
@@ -331,6 +375,7 @@ func Registry() []Tool {
 		},
 		{
 			Name:            "StopService",
+			Category:        "Service Management",
 			Description:     "Stop the active project service",
 			RequiresProject: true,
 			Fields: []Field{
@@ -348,6 +393,7 @@ func Registry() []Tool {
 		},
 		{
 			Name:            "RestartService",
+			Category:        "Service Management",
 			Description:     "Restart the active project service",
 			RequiresProject: true,
 			Fields: []Field{
@@ -365,6 +411,7 @@ func Registry() []Tool {
 		},
 		{
 			Name:            "ReloadService",
+			Category:        "Service Management",
 			Description:     "Reload the active project service",
 			RequiresProject: true,
 			Fields: []Field{
@@ -383,6 +430,7 @@ func Registry() []Tool {
 
 		{
 			Name:            "Metrics",
+			Category:        "Monitoring",
 			Description:     "Show live project and system metrics",
 			RequiresProject: false,
 			Fields:          nil,
