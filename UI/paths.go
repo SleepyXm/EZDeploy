@@ -17,4 +17,4 @@ func cloneDirJoin(repoName string) string {
 	return strings.TrimRight(cloneDirConst, "/") + "/" + repoName
 }
 
-const cloneDirConst = "../EZDeploy/projects"
+const cloneDirConst = "./projects"

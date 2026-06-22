@@ -1,15 +1,15 @@
 package walker
 
 import (
-	_ "embed"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
-//go:embed walk.yml
-var defaultRules []byte
+const defaultConfigPath = "yamls/walk.yml"
 
 type Config struct {
 	Name             string        `yaml:"name"`
@@ -37,13 +37,19 @@ type RuleDef struct {
 }
 
 func LoadDefaultConfig() (*Config, error) {
-	return decodeConfig(defaultRules, "embedded walk.yml")
+	return LoadConfig("")
 }
 
 func LoadConfig(path string) (*Config, error) {
+	path = strings.TrimSpace(path)
+
+	if path == "" {
+		path = filepath.Join("yamls", "walk.yml")
+	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read env rules: %w", err)
+		return nil, fmt.Errorf("read walker config %s: %w", path, err)
 	}
 
 	return decodeConfig(data, path)
