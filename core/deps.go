@@ -2,6 +2,7 @@ package core
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -62,18 +63,15 @@ func DownloadDeps(projectPath string) error {
 		binaryName := goModBinaryName(projectPath)
 		binaryPath := filepath.Join(projectPath, binaryName)
 
-		if fileExists(binaryPath) {
-			fmt.Println("[✓] Pre-built binary found, skipping build...")
-			if err := os.Chmod(binaryPath, 0o755); err != nil {
-				return fmt.Errorf("chmod binary: %w", err)
-			}
-		} else {
-			fmt.Printf("[→] Go project detected, building binary %s...\n", binaryName)
-			if err := runIn(projectPath, "go", "build", "-buildvcs=false", "-o", binaryName, "."); err != nil {
-				return fmt.Errorf("go build: %w", err)
-			}
-			fmt.Printf("[✓] Binary built: %s\n", binaryName)
+		// Redeployment must rebuild; an existing binary may represent an older commit.
+		fmt.Printf("[→] Go project detected, building binary %s...\n", binaryName)
+		if err := runIn(projectPath, "go", "build", "-buildvcs=false", "-o", binaryName, "."); err != nil {
+			return fmt.Errorf("go build: %w", err)
 		}
+		if err := os.Chmod(binaryPath, 0o755); err != nil {
+			return fmt.Errorf("chmod binary: %w", err)
+		}
+		fmt.Printf("[✓] Binary built: %s\n", binaryName)
 
 	case fileExists(packageJSON):
 		fmt.Println("[→] Node project found, installing dependencies...")
@@ -87,4 +85,31 @@ func DownloadDeps(projectPath string) error {
 	}
 
 	return nil
+}
+
+// DefaultStartCommand returns only conventional commands; ambiguous projects
+// remain user-controlled through the deploy command's --start option.
+func DefaultStartCommand(projectPath string) (string, error) {
+	if fileExists(filepath.Join(projectPath, "go.mod")) {
+		return "./" + goModBinaryName(projectPath), nil
+	}
+	if fileExists(filepath.Join(projectPath, "package.json")) {
+		data, err := os.ReadFile(filepath.Join(projectPath, "package.json"))
+		if err != nil {
+			return "", err
+		}
+		var pkg struct {
+			Scripts map[string]string `json:"scripts"`
+		}
+		if err := json.Unmarshal(data, &pkg); err != nil {
+			return "", fmt.Errorf("parse package.json: %w", err)
+		}
+		if strings.TrimSpace(pkg.Scripts["start"]) != "" {
+			return "npm start", nil
+		}
+	}
+	if data, err := os.ReadFile(filepath.Join(projectPath, "main.py")); err == nil && strings.Contains(string(data), "FastAPI(") {
+		return `python3 -m uvicorn main:app --host 127.0.0.1 --port "$PORT"`, nil
+	}
+	return "", nil
 }

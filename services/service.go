@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -24,29 +26,24 @@ func Create(projectName, projectPath, startCommand string, port int) error {
 	if port == 0 {
 		return fmt.Errorf("port is required")
 	}
+	serviceUser, uid, gid, err := deploymentUser()
+	if err != nil {
+		return err
+	}
+	// The application runs as the sudo caller, so its managed project must be writable by that account.
+	if err := filepath.WalkDir(projectPath, func(path string, _ os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		return os.Lchown(path, uid, gid)
+	}); err != nil {
+		return fmt.Errorf("set project ownership: %w", err)
+	}
 
 	name := Name(projectName)
-	envPath := filepath.Join(projectPath, ".env")
 	unitPath := filepath.Join(systemdDir, name+".service")
 
-	unit := fmt.Sprintf(`[Unit]
-Description=EZDeploy service for %s
-After=network.target
-
-[Service]
-Type=simple
-WorkingDirectory=%s
-Environment=PORT=%d
-EnvironmentFile=-%s
-ExecStart=/bin/sh -lc %q
-Restart=always
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-`, projectName, projectPath, port, envPath, startCommand)
+	unit := renderUnit(projectName, projectPath, startCommand, port, serviceUser)
 
 	if err := os.WriteFile(unitPath, []byte(unit), 0o644); err != nil {
 		return fmt.Errorf("write systemd unit: %w", err)
@@ -72,6 +69,48 @@ WantedBy=multi-user.target
 
 	fmt.Printf("[✓] Service created: %s\n", name)
 	return nil
+}
+
+func renderUnit(projectName, projectPath, startCommand string, port int, serviceUser string) string {
+	envPath := filepath.Join(projectPath, ".env")
+	// Percent signs are systemd specifiers; doubling preserves the user's command.
+	startCommand = strings.ReplaceAll(startCommand, "%", "%%")
+	return fmt.Sprintf(`[Unit]
+Description=EZDeploy service for %s
+After=network.target
+
+[Service]
+Type=simple
+User=%s
+WorkingDirectory=%s
+Environment=PORT=%d
+EnvironmentFile=-%s
+ExecStart=/bin/sh -lc %q
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+`, projectName, serviceUser, projectPath, port, envPath, startCommand)
+}
+
+func deploymentUser() (string, int, int, error) {
+	name := strings.TrimSpace(os.Getenv("SUDO_USER"))
+	if name == "" || name == "root" {
+		return "", 0, 0, fmt.Errorf("run EZDeploy with sudo from the account that should run the application")
+	}
+	account, err := user.Lookup(name)
+	if err != nil {
+		return "", 0, 0, fmt.Errorf("look up service user %q: %w", name, err)
+	}
+	uid, uidErr := strconv.Atoi(account.Uid)
+	gid, gidErr := strconv.Atoi(account.Gid)
+	if uidErr != nil || gidErr != nil {
+		return "", 0, 0, fmt.Errorf("invalid service account IDs for %q", name)
+	}
+	return account.Username, uid, gid, nil
 }
 
 func Start(projectName string) error {

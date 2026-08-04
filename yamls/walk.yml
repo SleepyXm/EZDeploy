@@ -60,6 +60,47 @@ scan_extensions:
   - ".json"
   - ".toml"
 
+# Dockerfile discovery is repository-wide and case-insensitive. The selected
+# production file is stored per project by the deploy command.
+dockerfiles:
+  - Dockerfile
+  - Dockerfile.*
+  - Dockerfile-*
+  - "*.Dockerfile"
+
+# Route rules use named method/path captures; prefix rules use var/prefix and
+# optionally receiver. They intentionally cover EZDeploy's current runtimes.
+route_methods: [GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS]
+
+prefix_rules:
+  - name: go-router-group
+    language: go
+    pattern: '(?P<var>\w+)\s*:=\s*(?P<receiver>\w+)\.Group\(\s*["`](?P<prefix>/[^"`\s]+)'
+  - name: express-router-mount
+    languages: [javascript, typescript]
+    pattern: '(?P<receiver>\w+)\.use\(\s*["`](?P<prefix>/[^"`\s]+)["`]\s*,\s*(?P<var>\w+)'
+  - name: fastapi-router-prefix
+    language: python
+    pattern: '(?P<var>\w+)\s*=\s*APIRouter\([^)]*prefix\s*=\s*["`](?P<prefix>/[^"`\s]+)'
+
+route_rules:
+  - name: dot-method
+    languages: [go, javascript, typescript]
+    pattern: '(?P<receiver>\w+)\.(?P<method>METHOD)\s*\(\s*["`](?P<path>/[^"`\s]*)'
+  - name: python-decorator
+    language: python
+    pattern: '@(?P<receiver>\w+)\.(?P<method>METHOD)\s*\(\s*["`](?P<path>/[^"`\s]+)'
+  - name: flask-route
+    language: python
+    pattern: '@(?P<receiver>\w+)\.route\(\s*["`](?P<path>/[^"`\s]+)["`][^)]*methods\s*=\s*\[(?P<method>[^\]]+)\]'
+    multi: true
+  - name: go-servemux
+    language: go
+    pattern: '"(?P<method>GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+(?P<path>/[^"]+)"'
+  - name: go-gorilla-methods
+    language: go
+    pattern: '\.HandleFunc\s*\(\s*["`](?P<path>/[^"`\s]+)["`][^)]*\)\.Methods\s*\(\s*["`](?P<method>METHOD)["`]'
+
 env_rules:
   - name: env-file-key
     files: [".env", ".env.*"]
@@ -133,6 +174,9 @@ env_rules:
     extensions: [".yml", ".yaml", ".json", ".toml"]
     files:
       - Dockerfile
+      - Dockerfile.*
+      - Dockerfile-*
+      - "*.Dockerfile"
       - docker-compose.yml
       - docker-compose.yaml
       - compose.yml

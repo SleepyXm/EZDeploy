@@ -11,16 +11,49 @@ import (
 )
 
 func SetupEnv(projectPath string) error {
+	return setupEnv(projectPath, true)
+}
+
+// SetupEnvNonInteractive validates discovered keys without waiting for terminal input.
+func SetupEnvNonInteractive(projectPath string) error {
+	return setupEnv(projectPath, false)
+}
+
+func setupEnv(projectPath string, interactive bool) error {
 	envOutput := filepath.Join(projectPath, ".env")
 	envValues := map[string]string{}
+	existing, err := os.ReadFile(envOutput)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read existing .env: %w", err)
+	}
+	if err == nil {
+		// Existing secrets receive the same protection as newly created files.
+		if err := os.Chmod(envOutput, 0o600); err != nil {
+			return fmt.Errorf("secure existing .env: %w", err)
+		}
+	}
+	existingKeys := parseEnvKeys(existing)
 
 	report, err := walker.ScanDefault(projectPath)
 	if err != nil {
+		if !interactive {
+			return fmt.Errorf("environment discovery: %w", err)
+		}
 		pretty.Printf("[!] Env discovery skipped: %v\n", err)
 	} else {
-		printEnvDiscoveryReport(report)
+		if interactive {
+			printEnvDiscoveryReport(report)
+		}
 
+		var missing []string
 		for _, key := range report.UniqueEnvNames() {
+			if existingKeys[key] {
+				continue
+			}
+			if !interactive {
+				missing = append(missing, key)
+				continue
+			}
 			value, err := input(fmt.Sprintf("%s (blank to skip): ", key))
 			if err != nil {
 				return err
@@ -33,9 +66,16 @@ func SetupEnv(projectPath string) error {
 
 			envValues[key] = value
 		}
+		if len(missing) > 0 {
+			return fmt.Errorf("missing environment values for %s", strings.Join(missing, ", "))
+		}
+	}
+	if !interactive {
+		fmt.Println("[✓] Environment validated")
+		return nil
 	}
 
-	pretty.Println("\n[→] Add extra environment variables (leave key blank when done):\n")
+	pretty.Printf("\n[→] Add extra environment variables (leave key blank when done):\n\n")
 
 	for {
 		key, err := input("Key: ")
@@ -47,6 +87,10 @@ func SetupEnv(projectPath string) error {
 		if key == "" {
 			break
 		}
+		if existingKeys[key] {
+			pretty.Printf("[!] %s already exists; preserving its value\n", key)
+			continue
+		}
 
 		value, err := input("Value: ")
 		if err != nil {
@@ -57,15 +101,26 @@ func SetupEnv(projectPath string) error {
 	}
 
 	if len(envValues) == 0 {
-		fmt.Println("[!] No environment variables entered, skipping...")
+		fmt.Println("[✓] Environment unchanged")
 		return nil
 	}
 
-	f, err := os.Create(envOutput)
+	flags := os.O_CREATE | os.O_WRONLY
+	if len(existing) > 0 {
+		flags |= os.O_APPEND
+	} else {
+		flags |= os.O_TRUNC
+	}
+	f, err := os.OpenFile(envOutput, flags, 0o600)
 	if err != nil {
-		return fmt.Errorf("create .env: %w", err)
+		return fmt.Errorf("open .env: %w", err)
 	}
 	defer f.Close()
+	if len(existing) > 0 && existing[len(existing)-1] != '\n' {
+		if _, err := f.WriteString("\n"); err != nil {
+			return err
+		}
+	}
 
 	keys := make([]string, 0, len(envValues))
 	for key := range envValues {
@@ -82,6 +137,17 @@ func SetupEnv(projectPath string) error {
 
 	fmt.Println("\n[✓] .env file created")
 	return nil
+}
+
+func parseEnvKeys(data []byte) map[string]bool {
+	keys := map[string]bool{}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "export "))
+		if key, _, ok := strings.Cut(line, "="); ok && key != "" && !strings.HasPrefix(key, "#") {
+			keys[strings.TrimSpace(key)] = true
+		}
+	}
+	return keys
 }
 
 func input(prompt string) (string, error) {

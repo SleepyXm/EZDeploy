@@ -27,12 +27,38 @@ func run(name string, args ...string) error {
 	return cmd.Run()
 }
 
+// EnsureTools installs only when a deploy needs a command that is not present.
+func EnsureTools(items ...string) error {
+	binaries := map[string]string{
+		"docker": "docker", "nginx": "nginx", "certbot": "certbot",
+	}
+	var missing []string
+	for _, item := range items {
+		binary := binaries[item]
+		if binary == "" {
+			return fmt.Errorf("unknown install item %q", item)
+		}
+		if _, err := exec.LookPath(binary); err != nil {
+			missing = append(missing, item)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	fmt.Printf("[→] Installing missing server components: %s\n", strings.Join(missing, ", "))
+	return install(missing, false)
+}
+
 // Install installs the requested language runtimes and infrastructure
 // components (nginx, certbot, docker). nginx and certbot are the default
 // reverse-proxy/SSL stack: if neither is explicitly selected, both are
 // installed automatically as a fallback. If either is explicitly selected,
 // only the selected ones run — no implicit extras.
 func Install(items []string) error {
+	return install(items, true)
+}
+
+func install(items []string, defaultProxy bool) error {
 	pm, ok := getPackageManager()
 	if !ok {
 		return fmt.Errorf("[!] unsupported OS — cannot install dependencies")
@@ -90,7 +116,7 @@ func Install(items []string) error {
 	// neither explicitly, fall back to installing both.
 	wantNginx := set["nginx"]
 	wantCertbot := set["certbot"]
-	if !wantNginx && !wantCertbot {
+	if defaultProxy && !wantNginx && !wantCertbot {
 		wantNginx = true
 		wantCertbot = true
 	}

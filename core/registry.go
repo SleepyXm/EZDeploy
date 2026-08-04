@@ -13,14 +13,19 @@ const (
 
 // Project holds the metadata for a deployed project.
 type Project struct {
-	Path         string `json:"path"`
-	Port         int    `json:"port"`
-	Domain       string `json:"domain"`
-	RepoURL      string `json:"repo_url"`
-	Branch       string `json:"branch"`
-	Status       string `json:"status"`
-	ServiceName  string `json:"service_name"`
-	StartCommand string `json:"start_command"`
+	Path          string `json:"path"`
+	Port          int    `json:"port"`
+	Domain        string `json:"domain"`
+	Email         string `json:"email,omitempty"`
+	RepoURL       string `json:"repo_url"`
+	Branch        string `json:"branch"`
+	Status        string `json:"status"`
+	ServiceName   string `json:"service_name"`
+	StartCommand  string `json:"start_command"`
+	Runtime       string `json:"runtime,omitempty"`
+	Dockerfile    string `json:"dockerfile,omitempty"`
+	DockerContext string `json:"docker_context,omitempty"`
+	ContainerPort int    `json:"container_port,omitempty"`
 }
 
 // Registry maps project names to their metadata.
@@ -95,6 +100,9 @@ func RegisterProject(projectName string, project Project) error {
 	if project.Domain != "" {
 		existing.Domain = project.Domain
 	}
+	if project.Email != "" {
+		existing.Email = project.Email
+	}
 
 	if project.RepoURL != "" {
 		existing.RepoURL = project.RepoURL
@@ -104,12 +112,20 @@ func RegisterProject(projectName string, project Project) error {
 		existing.Branch = project.Branch
 	}
 
-	if project.ServiceName != "" {
+	if project.Runtime != "" {
+		existing.Runtime = project.Runtime
 		existing.ServiceName = project.ServiceName
-	}
-
-	if project.StartCommand != "" {
 		existing.StartCommand = project.StartCommand
+		existing.Dockerfile = project.Dockerfile
+		existing.DockerContext = project.DockerContext
+		existing.ContainerPort = project.ContainerPort
+	} else {
+		if project.ServiceName != "" {
+			existing.ServiceName = project.ServiceName
+		}
+		if project.StartCommand != "" {
+			existing.StartCommand = project.StartCommand
+		}
 	}
 
 	if project.Status != "" {

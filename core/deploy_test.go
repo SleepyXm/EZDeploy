@@ -1,0 +1,256 @@
+package core
+
+import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+
+	"EZDeploy/walker"
+)
+
+func TestCloneRepoFastForwardsExistingProject(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+
+	// CloneDir is deliberately relative to the EZDeploy installation directory.
+	t.Chdir(t.TempDir())
+
+	origin := filepath.Join(t.TempDir(), "sample.git")
+	seed := filepath.Join(t.TempDir(), "seed")
+	testGit(t, "init", "--bare", origin)
+	testGit(t, "init", "-b", "main", seed)
+	testGit(t, "-C", seed, "config", "user.name", "EZDeploy Test")
+	testGit(t, "-C", seed, "config", "user.email", "test@example.com")
+	testGit(t, "-C", seed, "remote", "add", "origin", origin)
+
+	versionFile := filepath.Join(seed, "version.txt")
+	if err := os.WriteFile(versionFile, []byte("one"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	testGit(t, "-C", seed, "add", "version.txt")
+	testGit(t, "-C", seed, "commit", "-m", "first")
+	testGit(t, "-C", seed, "push", "-u", "origin", "main")
+
+	projectPath, err := CloneRepoWithOptions(origin, CloneOptions{Branch: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(versionFile, []byte("two"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	testGit(t, "-C", seed, "commit", "-am", "second")
+	testGit(t, "-C", seed, "push")
+	if _, err := CloneRepoWithOptions(origin, CloneOptions{Branch: "main"}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(projectPath, "version.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "two" {
+		t.Fatalf("redeployed version = %q, want two", got)
+	}
+}
+
+func testGit(t *testing.T, args ...string) {
+	t.Helper()
+	if output, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+	}
+}
+
+func TestNonInteractiveEnvironmentValidation(t *testing.T) {
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "main.go"), []byte(`os.Getenv("TOKEN")`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	envPath := filepath.Join(project, ".env")
+	if err := os.WriteFile(envPath, []byte("TOKEN=kept\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repoRoot, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(repoRoot)
+
+	if err := SetupEnvNonInteractive(project); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(envPath)
+	if err != nil || string(data) != "TOKEN=kept\n" {
+		t.Fatalf("existing environment changed: %q, %v", data, err)
+	}
+	info, err := os.Stat(envPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf(".env mode = %v; want 0600", info.Mode().Perm())
+	}
+
+	if err := os.WriteFile(filepath.Join(project, "main.go"), []byte(`os.Getenv("NEW_TOKEN")`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetupEnvNonInteractive(project); err == nil || !strings.Contains(err.Error(), "NEW_TOKEN") {
+		t.Fatalf("missing key error = %v", err)
+	}
+}
+
+func TestRoutesFlowFromSourceIntoNginx(t *testing.T) {
+	config, err := walker.LoadConfig(filepath.Join("..", "yamls", "walk.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scanner, err := walker.NewScanner(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	sources := map[string]string{
+		"Dockerfile": `FROM node:22-alpine
+EXPOSE 3000`,
+		"deploy/prod.Dockerfile": `FROM golang:1.25 AS build
+FROM alpine:3.22
+EXPOSE 8080/tcp 8081`,
+		"routes.go": `api := r.Group("/api")
+api.GET("/users/:id", getUser)
+// api.DELETE("/commented", deleteUser)`,
+		"routes.js": `app.use("/v1", router)
+router.post("/items/:id", createItem)`,
+		"routes.py": `router = APIRouter(prefix="/admin")
+@router.get("/{id}")
+def get_admin(): pass
+@app.route("/login", methods=["GET", "POST"])
+def login(): pass`,
+	}
+	for name, source := range sources {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(root, name)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, name), []byte(source), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	report, err := scanner.Scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"/admin/{id}", "/api/users/:id", "/login", "/v1/items/:id"}
+	if got := report.UniqueRoutePaths(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("routes = %#v, want %#v", got, want)
+	}
+	if len(report.Dockerfiles) != 2 {
+		t.Fatalf("Dockerfiles = %#v, want two", report.Dockerfiles)
+	}
+	production := report.Dockerfiles[1]
+	if production.Path != "deploy/prod.Dockerfile" ||
+		production.BaseImage != "alpine:3.22" ||
+		!reflect.DeepEqual(production.ExposedPorts, []int{8080, 8081}) {
+		t.Fatalf("production Dockerfile metadata = %#v", production)
+	}
+
+	nginx, _, err := renderNginxConfig(8080, "api.example.com", report.UniqueRoutePaths(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{
+		`location ~ ^/admin/[^/]+/?$`,
+		`location ~ ^/api/users/[^/]+/?$`,
+		`location = /login`,
+		`location ~ ^/v1/items/[^/]+/?$`,
+		"location / {\n        return 404;",
+	} {
+		if !strings.Contains(nginx, expected) {
+			t.Errorf("generated nginx config is missing %q:\n%s", expected, nginx)
+		}
+	}
+	if nginxBinary, err := exec.LookPath("nginx"); err == nil {
+		nginxRoot := t.TempDir()
+		fullConfig := "pid " + filepath.Join(nginxRoot, "nginx.pid") + ";\nerror_log stderr;\nevents {}\nhttp {\n" + nginx + "}\n"
+		configPath := filepath.Join(nginxRoot, "nginx.conf")
+		if err := os.WriteFile(configPath, []byte(fullConfig), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		// The production writer also runs nginx -t before replacing a live config.
+		if output, err := exec.Command(nginxBinary, "-t", "-e", "stderr", "-p", nginxRoot, "-c", configPath).CombinedOutput(); err != nil {
+			if strings.Contains(string(output), "Operation not permitted") {
+				t.Skip("nginx parser is blocked by the execution sandbox")
+			}
+			t.Fatalf("nginx rejected generated config: %v\n%s", err, output)
+		}
+	}
+}
+
+func TestDockerRunIsLoopbackOnlyAndPreservesEnvironment(t *testing.T) {
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, ".env"), []byte("TOKEN=secret\nPORT=wrong\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deployment := DockerDeployment{
+		ProjectName: "api", ProjectPath: project,
+		HostPort: 8000, ContainerPort: 8080,
+	}
+	got := dockerRunArgs(deployment, "ezdeploy-api", "ezdeploy/api:latest")
+	want := []string{
+		"run", "--detach", "--name", "ezdeploy-api",
+		"--restart", "unless-stopped",
+		"--label", "com.ezdeploy.project=api",
+		"--publish", "127.0.0.1:8000:8080",
+		"--env-file", filepath.Join(project, ".env"),
+		"--env", "PORT=8080",
+		"ezdeploy/api:latest",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("docker run args = %#v, want %#v", got, want)
+	}
+}
+
+func TestDockerPathsCannotEscapeProject(t *testing.T) {
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "Dockerfile.prod"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := projectFile(project, "Dockerfile.prod", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := projectFile(project, "../Dockerfile", false); err == nil {
+		t.Fatal("path traversal was accepted")
+	}
+	outside := filepath.Join(t.TempDir(), "Dockerfile")
+	if err := os.WriteFile(outside, []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(project, "Dockerfile.link")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := projectFile(project, "Dockerfile.link", false); err == nil {
+		t.Fatal("symlink escaping the project was accepted")
+	}
+}
+
+func TestRouteLocationParameters(t *testing.T) {
+	tests := map[string]string{
+		"/health":            "location = /health",
+		"/health/":           "location = /health/",
+		"/users/:id":         `location ~ ^/users/[^/]+/?$`,
+		"/users/{id}":        `location ~ ^/users/[^/]+/?$`,
+		"/files/<path:name>": `location ~ ^/files/.*/?$`,
+	}
+	for input, want := range tests {
+		got, err := routeLocation(input)
+		if err != nil {
+			t.Fatalf("routeLocation(%q): %v", input, err)
+		}
+		if got != want {
+			t.Errorf("routeLocation(%q) = %q, want %q", input, got, want)
+		}
+	}
+}

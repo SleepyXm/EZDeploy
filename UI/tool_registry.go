@@ -6,6 +6,7 @@ import (
 
 	"EZDeploy/core"
 	"EZDeploy/services"
+	"EZDeploy/walker"
 )
 
 // ToolStatus represents the validity state of a registered tool.
@@ -208,9 +209,11 @@ func Registry() []Tool {
 			RequiresProject: true,
 			Fields: []Field{
 				{Key: "projectName", Label: "Project name", AutoFill: fromProjectName},
+				{Key: "projectPath", Label: "Project path", AutoFill: fromProjectPath},
 				{Key: "port", Label: "Port", Placeholder: "8000"},
 				{Key: "domain", Label: "Domain", Placeholder: "example.com"},
 				{Key: "email", Label: "Email (for SSL)", Placeholder: "you@example.com"},
+				{Key: "extraRoutes", Label: "Additional routes", Placeholder: "/health,/callback"},
 			},
 			Validate: func() (ToolStatus, string) {
 				if !binAvailable("nginx") {
@@ -225,17 +228,23 @@ func Registry() []Tool {
 				port := 0
 				fmt.Sscanf(args["port"], "%d", &port)
 
-				if args["projectName"] == "" || port == 0 || args["domain"] == "" || args["email"] == "" {
-					return fmt.Errorf("projectName, port, domain, and email are required")
+				if args["projectName"] == "" || args["projectPath"] == "" || port == 0 || args["domain"] == "" || args["email"] == "" {
+					return fmt.Errorf("projectName, projectPath, port, domain, and email are required")
 				}
 
-				if err := core.CreateNginxConfig(args["projectName"], port, args["domain"], args["email"]); err != nil {
+				report, err := walker.ScanDefault(args["projectPath"])
+				if err != nil {
+					return err
+				}
+				routes := append(report.UniqueRoutePaths(), splitCSV(args["extraRoutes"])...)
+				if err := core.CreateNginxConfig(args["projectName"], port, args["domain"], args["email"], routes, true); err != nil {
 					return err
 				}
 
 				return core.RegisterProject(args["projectName"], core.Project{
 					Port:   port,
 					Domain: args["domain"],
+					Email:  args["email"],
 					Status: "deployed",
 				})
 			},

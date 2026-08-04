@@ -9,11 +9,14 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
 
 const fallbackMaxFileSizeBytes int64 = 2 * 1024 * 1024
+
+var methodTokenPattern = regexp.MustCompile(`[A-Za-z]+`)
 
 type Rule struct {
 	Name       string
@@ -24,6 +27,24 @@ type Rule struct {
 	NameIdx    int
 }
 
+type RouteRule struct {
+	Name        string
+	Languages   map[string]bool
+	Re          *regexp.Regexp
+	MethodIdx   int
+	PathIdx     int
+	ReceiverIdx int
+	Multi       bool
+}
+
+type PrefixRule struct {
+	Languages   map[string]bool
+	Re          *regexp.Regexp
+	VarIdx      int
+	ReceiverIdx int
+	PrefixIdx   int
+}
+
 type Scanner struct {
 	cfg            *Config
 	maxFileSize    int64
@@ -32,7 +53,11 @@ type Scanner struct {
 	ignoredFiles   []string
 	scanFiles      []string
 	scanExtensions map[string]bool
+	dockerfiles    []string
 	rules          []Rule
+	routeMethods   map[string]bool
+	routeRules     []RouteRule
+	prefixRules    []PrefixRule
 }
 
 func ScanDefault(root string) (Report, error) {
@@ -76,6 +101,8 @@ func NewScanner(cfg *Config) (*Scanner, error) {
 		ignoredFiles:   cfg.IgnoredFiles,
 		scanFiles:      cfg.ScanFiles,
 		scanExtensions: map[string]bool{},
+		dockerfiles:    cfg.Dockerfiles,
+		routeMethods:   map[string]bool{},
 	}
 
 	if s.maxFileSize <= 0 {
@@ -113,7 +140,66 @@ func NewScanner(cfg *Config) (*Scanner, error) {
 		s.rules = append(s.rules, rule)
 	}
 
+	for _, method := range cfg.RouteMethods {
+		s.routeMethods[strings.ToUpper(method)] = true
+	}
+	methods := strings.Join(cfg.RouteMethods, "|")
+	for _, def := range cfg.RouteRules {
+		rule, err := compileRouteRule(def, methods)
+		if err != nil {
+			return nil, err
+		}
+		s.routeRules = append(s.routeRules, rule)
+	}
+	for _, def := range cfg.PrefixRules {
+		rule, err := compilePrefixRule(def)
+		if err != nil {
+			return nil, err
+		}
+		s.prefixRules = append(s.prefixRules, rule)
+	}
+
 	return s, nil
+}
+
+func compileRouteRule(def RuleDef, methods string) (RouteRule, error) {
+	// METHOD keeps the YAML readable while the configured method list remains authoritative.
+	re, err := regexp.Compile(strings.ReplaceAll(def.Pattern, "METHOD", "(?i:"+methods+")"))
+	if err != nil {
+		return RouteRule{}, fmt.Errorf("compile route rule %q: %w", def.Name, err)
+	}
+	methodIdx, pathIdx := re.SubexpIndex("method"), re.SubexpIndex("path")
+	if def.Name == "" || methodIdx < 0 || pathIdx < 0 {
+		return RouteRule{}, fmt.Errorf("route rule %q requires method and path captures", def.Name)
+	}
+	return RouteRule{
+		Name: def.Name, Languages: languageSet(def), Re: re,
+		MethodIdx: methodIdx, PathIdx: pathIdx,
+		ReceiverIdx: re.SubexpIndex("receiver"), Multi: def.Multi,
+	}, nil
+}
+
+func compilePrefixRule(def RuleDef) (PrefixRule, error) {
+	re, err := regexp.Compile(def.Pattern)
+	if err != nil {
+		return PrefixRule{}, fmt.Errorf("compile prefix rule %q: %w", def.Name, err)
+	}
+	varIdx, prefixIdx := re.SubexpIndex("var"), re.SubexpIndex("prefix")
+	if varIdx < 0 || prefixIdx < 0 {
+		return PrefixRule{}, fmt.Errorf("prefix rule %q requires var and prefix captures", def.Name)
+	}
+	return PrefixRule{languageSet(def), re, varIdx, re.SubexpIndex("receiver"), prefixIdx}, nil
+}
+
+func languageSet(def RuleDef) map[string]bool {
+	set := map[string]bool{}
+	if def.Language != "" {
+		set[def.Language] = true
+	}
+	for _, language := range def.Languages {
+		set[language] = true
+	}
+	return set
 }
 
 func compileRule(def RuleDef) (Rule, error) {
@@ -172,6 +258,7 @@ func (s *Scanner) Scan(root string) (Report, error) {
 	}
 
 	seenHits := map[string]struct{}{}
+	seenRoutes := map[string]struct{}{}
 
 	err = filepath.WalkDir(absRoot, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -204,7 +291,7 @@ func (s *Scanner) Scan(root string) (Report, error) {
 			return nil
 		}
 
-		hits, scanned, err := s.scanFile(absRoot, path, lang)
+		hits, routes, scanned, err := s.scanFile(absRoot, path, lang)
 		if err != nil {
 			return nil
 		}
@@ -221,6 +308,20 @@ func (s *Scanner) Scan(root string) (Report, error) {
 
 			seenHits[key] = struct{}{}
 			report.EnvHits = append(report.EnvHits, hit)
+		}
+		for _, hit := range routes {
+			key := fmt.Sprintf("%s:%d:%s:%s", hit.File, hit.Line, hit.Method, hit.Path)
+			if _, exists := seenRoutes[key]; !exists {
+				seenRoutes[key] = struct{}{}
+				report.RouteHits = append(report.RouteHits, hit)
+			}
+		}
+		if s.matchesDockerfile(base) {
+			dockerfile, err := inspectDockerfile(absRoot, path)
+			if err != nil {
+				return err
+			}
+			report.Dockerfiles = append(report.Dockerfiles, dockerfile)
 		}
 
 		return nil
@@ -240,27 +341,89 @@ func (s *Scanner) Scan(root string) (Report, error) {
 
 		return a.Name < b.Name
 	})
+	sort.Slice(report.RouteHits, func(i, j int) bool {
+		if report.RouteHits[i].File != report.RouteHits[j].File {
+			return report.RouteHits[i].File < report.RouteHits[j].File
+		}
+		return report.RouteHits[i].Line < report.RouteHits[j].Line
+	})
+	sort.Slice(report.Dockerfiles, func(i, j int) bool {
+		return report.Dockerfiles[i].Path < report.Dockerfiles[j].Path
+	})
 
 	return report, err
 }
 
-func (s *Scanner) scanFile(root, path, lang string) ([]EnvHit, bool, error) {
+func inspectDockerfile(root, path string) (DockerfileInfo, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return DockerfileInfo{}, fmt.Errorf("open Dockerfile %s: %w", path, err)
+	}
+	defer file.Close()
+
+	relPath, err := filepath.Rel(root, path)
+	if err != nil {
+		relPath = path
+	}
+	info := DockerfileInfo{Path: filepath.ToSlash(relPath)}
+	seenPorts := map[int]bool{}
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		switch strings.ToUpper(fields[0]) {
+		case "FROM":
+			// Only metadata from the final runnable stage should drive deployment.
+			info.ExposedPorts = nil
+			seenPorts = map[int]bool{}
+			index := 1
+			for index < len(fields) && strings.HasPrefix(fields[index], "--") {
+				index++
+			}
+			if index < len(fields) {
+				// The last FROM is the image that will actually run.
+				info.BaseImage = fields[index]
+			}
+		case "EXPOSE":
+			for _, value := range fields[1:] {
+				port, err := strconv.Atoi(strings.SplitN(value, "/", 2)[0])
+				if err == nil && port > 0 && port <= 65535 && !seenPorts[port] {
+					seenPorts[port] = true
+					info.ExposedPorts = append(info.ExposedPorts, port)
+				}
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return DockerfileInfo{}, fmt.Errorf("scan Dockerfile %s: %w", path, err)
+	}
+	sort.Ints(info.ExposedPorts)
+	return info, nil
+}
+
+func (s *Scanner) scanFile(root, path, lang string) ([]EnvHit, []RouteHit, bool, error) {
 	info, err := os.Stat(path)
 	if err != nil {
-		return nil, false, nil
+		return nil, nil, false, nil
 	}
 
 	if info.Size() > s.maxFileSize {
-		return nil, false, nil
+		return nil, nil, false, nil
 	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, false, nil
+		return nil, nil, false, nil
 	}
 
 	if !looksText(data) {
-		return nil, false, nil
+		return nil, nil, false, nil
 	}
 
 	relPath, err := filepath.Rel(root, path)
@@ -271,6 +434,8 @@ func (s *Scanner) scanFile(root, path, lang string) ([]EnvHit, bool, error) {
 	relPath = filepath.ToSlash(relPath)
 
 	var hits []EnvHit
+	var routeHits []RouteHit
+	prefixes := s.resolvePrefixes(data, lang)
 
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -305,9 +470,101 @@ func (s *Scanner) scanFile(root, path, lang string) ([]EnvHit, bool, error) {
 				})
 			}
 		}
+		if routeCommentLine(line, lang) {
+			continue
+		}
+
+		for _, rule := range s.routeRules {
+			if len(rule.Languages) > 0 && !rule.Languages[lang] {
+				continue
+			}
+			for _, match := range rule.Re.FindAllStringSubmatch(line, -1) {
+				method, routePath := capture(match, rule.MethodIdx), capture(match, rule.PathIdx)
+				if prefix := prefixes[capture(match, rule.ReceiverIdx)]; prefix != "" {
+					routePath = strings.TrimRight(prefix, "/") + "/" + strings.TrimLeft(routePath, "/")
+				}
+				for _, resolved := range s.expandMethods(method, rule.Multi) {
+					routeHits = append(routeHits, RouteHit{
+						Method: resolved, Path: normalizeRoute(routePath),
+						File: relPath, Line: lineNo, Rule: rule.Name,
+					})
+				}
+			}
+		}
 	}
 
-	return hits, true, nil
+	return hits, routeHits, true, nil
+}
+
+func (s *Scanner) resolvePrefixes(data []byte, lang string) map[string]string {
+	type foundPrefix struct{ variable, receiver, prefix string }
+	var found []foundPrefix
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	for scanner.Scan() {
+		if routeCommentLine(scanner.Text(), lang) {
+			continue
+		}
+		for _, rule := range s.prefixRules {
+			if len(rule.Languages) > 0 && !rule.Languages[lang] {
+				continue
+			}
+			for _, match := range rule.Re.FindAllStringSubmatch(scanner.Text(), -1) {
+				found = append(found, foundPrefix{capture(match, rule.VarIdx), capture(match, rule.ReceiverIdx), capture(match, rule.PrefixIdx)})
+			}
+		}
+	}
+	prefixes := map[string]string{}
+	// Router groups may be nested, so resolve parent prefixes in bounded passes.
+	for pass := 0; pass <= len(found); pass++ {
+		for _, item := range found {
+			if item.variable == item.receiver {
+				continue
+			}
+			prefixes[item.variable] = normalizeRoute(prefixes[item.receiver] + item.prefix)
+		}
+	}
+	return prefixes
+}
+
+// Ignore declarations disabled by the language's ordinary line-comment syntax.
+func routeCommentLine(line, lang string) bool {
+	line = strings.TrimSpace(line)
+	if lang == "python" {
+		return strings.HasPrefix(line, "#")
+	}
+	return strings.HasPrefix(line, "//") || strings.HasPrefix(line, "/*") || strings.HasPrefix(line, "*")
+}
+
+func (s *Scanner) expandMethods(raw string, multi bool) []string {
+	if !multi {
+		method := strings.ToUpper(raw)
+		if s.routeMethods[method] {
+			return []string{method}
+		}
+		return nil
+	}
+	var methods []string
+	for _, method := range methodTokenPattern.FindAllString(raw, -1) {
+		method = strings.ToUpper(method)
+		if s.routeMethods[method] {
+			methods = append(methods, method)
+		}
+	}
+	return methods
+}
+
+func capture(match []string, index int) string {
+	if index < 0 || index >= len(match) {
+		return ""
+	}
+	return strings.TrimSpace(match[index])
+}
+
+func normalizeRoute(route string) string {
+	if !strings.HasPrefix(route, "/") {
+		route = "/" + route
+	}
+	return route
 }
 
 func (s *Scanner) shouldScan(path string, lang string) bool {
@@ -321,6 +578,9 @@ func (s *Scanner) shouldScan(path string, lang string) bool {
 	}
 
 	base := filepath.Base(path)
+	if s.matchesDockerfile(base) {
+		return true
+	}
 	if matchesAnyFilePattern(base, s.scanFiles) {
 		return true
 	}
@@ -337,6 +597,15 @@ func (s *Scanner) shouldScan(path string, lang string) bool {
 		}
 	}
 
+	return false
+}
+
+func (s *Scanner) matchesDockerfile(base string) bool {
+	for _, pattern := range s.dockerfiles {
+		if matchFilePattern(strings.ToLower(base), strings.ToLower(pattern)) {
+			return true
+		}
+	}
 	return false
 }
 

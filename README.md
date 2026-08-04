@@ -1,48 +1,106 @@
-## EZDeploy
-A lightweight deployment tool that gets your project live in minutes — 
-handles dependencies, nginx config, SSL, and domain setup automatically.
-Push to GitHub and your server updates itself.
+# EZDeploy
 
-## Requirements
-- A Linux VPS or cloud instance (AWS, DigitalOcean, Hetzner, etc.)
-- Python 3.9+
-- Git installed on your instance
-- A domain pointed at your instance
+EZDeploy puts a backend from Git onto a systemd-based Linux server. It connects repository updates, environment and route discovery, native or Docker execution, Nginx, HTTPS, and the existing deployment registry.
 
-## Usage
+Running `ezdeploy` without a command opens the terminal UI.
 
-### 1. Clone the repo
-git clone https://github.com/SleepyXm/EZDeploy
-cd EZDeploy
+## Setup
 
-### 2. Install server dependencies
-sudo python3 install_services.py
+The server needs Git, `sudo`, a domain pointed at it, and the application runtime when deploying natively. EZDeploy installs missing Nginx, Certbot, and Docker components on its supported apt/dnf distributions. Go 1.25 or newer is needed only to build EZDeploy itself.
 
-This installs nginx, certbot, and your chosen language runtimes.
+Keep the binary beside `yamls/walk.yml`:
 
-### 3. Deploy a project
-sudo python3 deploy.py
+```bash
+git clone <ezdeploy-repository> /opt/ezdeploy
+cd /opt/ezdeploy
+go build -o ezdeploy .
+sudo ./ezdeploy
+```
 
-Follow the prompts — it'll ask for your repo URL, domain, email, 
-entrypoint, and environment variables.
+Projects are stored under `/opt/ezdeploy/projects/<project-name>`. EZDeploy does not upgrade the operating system when it starts.
 
-### 4. Set up auto-deploy (optional)
-Add a webhook in your GitHub repo:
-- Settings → Webhooks → Add webhook
-- Payload URL: https://yourdomain.com/gh-webhook
-- Content type: application/json
-- Secret: your chosen secret
+## Deploy
 
-Then save your secret on the server:
-echo "WEBHOOK_SECRET=yoursecret" > .secrets
+```bash
+sudo /opt/ezdeploy/ezdeploy deploy https://github.com/example/backend
+```
 
-From now on, every push to your deploy branch will automatically 
-pull changes, reinstall dependencies, and restart your service.
+The deploy command clones or fast-forwards the repository, scans it, selects a runtime, prepares dependencies and environment values, starts the application, configures Nginx, provisions HTTPS, and saves the result in `registry.json`.
 
-## Supported Languages
-- Python (FastAPI, Flask, Django)
-- Node (Express, Fastify)
-- Go (Gin, Echo)
+| Option | Purpose |
+| --- | --- |
+| `--branch <name>` | Select a Git branch. |
+| `--ssh-key <path>` | Use a private repository key. |
+| `--domain <host>` | Set the public domain. |
+| `--email <address>` | Set the Let's Encrypt email. |
+| `--port <number>` | Override the host application port. |
+| `--start <command>` | Set a native start command. |
+| `--runtime <native\|docker>` | Select native systemd or Docker execution. |
+| `--dockerfile <path>` | Select the production Dockerfile. |
+| `--docker-context <path>` | Set its repository-relative build context. |
+| `--container-port <number>` | Set the internal application port. |
+| `--allow-route <path>` | Add an undiscovered route; repeatable. |
+| `--no-route-whitelist` | Proxy every application path. |
+| `--non-interactive` | Reuse saved values and fail instead of prompting. |
 
-## Issues / Contributions
-Open a PR or raise an issue, happy to take a look.
+## Native or Docker starter
+
+If Dockerfiles are found during a new interactive deployment, EZDeploy presents the native runtime and every candidate:
+
+```text
+Deployment runtime:
+  0. Native process + systemd + Nginx
+  1. Docker: Dockerfile.prod (node:22-alpine, ports 8080)
+  2. Docker: Dockerfile (node:22, ports 3000)
+  3. Docker: docker/worker.Dockerfile (python:3.13, no EXPOSE)
+```
+
+The walker recognizes nested `Dockerfile`, `Dockerfile.*`, `Dockerfile-*`, and `*.Dockerfile` names. Production-named files are displayed first, but interactive deployment never silently chooses one. It reads the final `FROM` image and numeric `EXPOSE` ports. Ambiguous ports require a prompt or `--container-port`.
+
+Docker images are built before the current container is stopped. The previous container is retained until its replacement starts, allowing startup rollback. Containers use `unless-stopped` and publish only to `127.0.0.1`; Nginx remains the public listener for HTTP, HTTPS, streaming, and route filtering. The process inside the container must listen on `0.0.0.0`.
+
+Runtime, Dockerfile, context, and container port are saved for later deployments. An automated first deployment with multiple files must provide `--dockerfile` and, when necessary, `--container-port`.
+
+## Private repositories and remote redeploys
+
+Create a deploy key on the server, add its public half to the repository provider, and keep the private half at mode `0600`:
+
+```bash
+ssh-keygen -t ed25519 -f /home/ubuntu/.ssh/backend_deploy
+chmod 600 /home/ubuntu/.ssh/backend_deploy
+sudo ezdeploy deploy git@github.com:example/private-backend.git \
+  --ssh-key /home/ubuntu/.ssh/backend_deploy
+```
+
+The key is passed to Git for that process only and is not copied or registered. Supply it again during a private redeploy. SSH provides the remote control channel without exposing another API:
+
+```bash
+ssh -i ~/.ssh/ec2.pem ubuntu@server \
+  'sudo /opt/ezdeploy/ezdeploy deploy git@github.com:example/private-backend.git --ssh-key /home/ubuntu/.ssh/backend_deploy --non-interactive'
+```
+
+Git updates use `merge --ff-only`; server divergence is rejected rather than overwritten. Non-interactive deployment also stops when a newly discovered environment variable has no saved value.
+
+## Routes, environment, and services
+
+Route and Dockerfile rules extend the existing `yamls/walk.yml`. Common literal Go, Express, FastAPI, and Flask routes become Nginx locations; unknown paths return `404`. Dynamic or cross-file routes can be supplied with `--allow-route`, which must be repeated on later deployments.
+
+Existing `.env` values are preserved at mode `0600`. Native applications run as `SUDO_USER`, not root. Go applications rebuild on update; conventional commands are detected for Go, `npm start`, and FastAPI `main:app`.
+
+## Current boundaries
+
+- Nginx + Certbot is the implemented ingress; Traefik and cloud ingress are later providers.
+- There is no custom HTTP deployment API, application health check, or complete deployment rollback yet.
+- Route discovery is literal, and native monorepo subdirectory selection is not implemented.
+- Installation and binary upgrades are not packaged; keep the binary and `yamls` together.
+- Builds execute trusted repository content. Do not deploy an untrusted repository as an administrator.
+
+## Verification
+
+```bash
+go test ./...
+go vet ./...
+go test -race ./...
+```
+
+Tests cover Git fast-forward updates, environment preservation, Dockerfile discovery and path containment, loopback-only Docker arguments, runtime selection, route-to-Nginx generation, real Nginx parsing when available, and non-root systemd rendering.

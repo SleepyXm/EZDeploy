@@ -19,7 +19,11 @@ type Config struct {
 	IgnoredFiles     []string      `yaml:"ignored_files"`
 	ScanFiles        []string      `yaml:"scan_files"`
 	ScanExtensions   []string      `yaml:"scan_extensions"`
+	Dockerfiles      []string      `yaml:"dockerfiles"`
 	EnvRules         []RuleDef     `yaml:"env_rules"`
+	RouteMethods     []string      `yaml:"route_methods"`
+	PrefixRules      []RuleDef     `yaml:"prefix_rules"`
+	RouteRules       []RuleDef     `yaml:"route_rules"`
 }
 
 type LanguageDef struct {
@@ -34,6 +38,7 @@ type RuleDef struct {
 	Extensions []string `yaml:"extensions"`
 	Files      []string `yaml:"files"`
 	Pattern    string   `yaml:"pattern"`
+	Multi      bool     `yaml:"multi"`
 }
 
 func LoadDefaultConfig() (*Config, error) {
