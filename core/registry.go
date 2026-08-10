@@ -26,6 +26,8 @@ type Project struct {
 	Dockerfile    string `json:"dockerfile,omitempty"`
 	DockerContext string `json:"docker_context,omitempty"`
 	ContainerPort int    `json:"container_port,omitempty"`
+	SigningKey    string `json:"signing_key,omitempty"` // Ed25519 private key seed (base64) — never logged
+	SSHKey        string `json:"ssh_key,omitempty"`     // path to SSH private key for private repos
 }
 
 // Registry maps project names to their metadata.
