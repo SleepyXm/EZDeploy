@@ -211,14 +211,21 @@ def users(): return []`,
 go 1.25`,
 		"services/payments/cmd/api/main.go": `package main
 import "net/http"
-func main() { http.ListenAndServe(":8080", nil) }`,
-		"services/notifications/package.json": `{
-  "name": "notifications-api",
-  "scripts": {"start": "node server.js"},
+func main() {
+  mux := http.NewServeMux()
+  mux.HandleFunc("GET /payments", nil)
+  http.ListenAndServe(":8080", mux)
+}`,
+		"services/payments/handlers/api_test.go": `package handlers
+const testRoute = "GET /test-only"`,
+		"package.json": `{
+  "name": "finsec",
+  "scripts": {"start": "node app/ui/index.js"},
   "dependencies": {"express": "latest"}
 }`,
-		"services/notifications/server.js": `const express = require("express")
+		"app/ui/index.ts": `const express = require("express")
 const app = express()
+app.get("/notifications", handler)
 app.listen(process.env.PORT)`,
 	}
 	for name, source := range sources {
@@ -247,7 +254,7 @@ app.listen(process.env.PORT)`,
 	}{
 		"python": {"users", "services/users", "services/users/main.py", `python3 -m uvicorn main:app --host 127.0.0.1 --port "$PORT"`},
 		"go":     {"api", "services/payments", "services/payments/cmd/api/main.go", "go run ./cmd/api"},
-		"node":   {"notifications-api", "services/notifications", "services/notifications/server.js", "npm start"},
+		"node":   {"finsec", ".", "app/ui/index.ts", "npm start"},
 	}
 	for runtime, expected := range want {
 		service, ok := byRuntime[runtime]
@@ -259,6 +266,16 @@ app.listen(process.env.PORT)`,
 			service.Entry != expected.entry || service.StartCommand != expected.start ||
 			service.Confidence != "high" {
 			t.Errorf("%s service = %#v", runtime, service)
+		}
+	}
+	routeWant := map[string][]string{
+		"python": {"/users"},
+		"go":     {"/payments"},
+		"node":   {"/notifications"},
+	}
+	for runtime, expected := range routeWant {
+		if got := report.UniqueRoutePathsForService(byRuntime[runtime]); !reflect.DeepEqual(got, expected) {
+			t.Errorf("routes for %s = %#v, want %#v", runtime, got, expected)
 		}
 	}
 }

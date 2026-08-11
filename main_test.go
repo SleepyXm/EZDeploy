@@ -38,3 +38,27 @@ func TestRuntimeSelection(t *testing.T) {
 		})
 	}
 }
+
+func TestServiceSelectionTargetsDetectedRoot(t *testing.T) {
+	services := []walker.ServiceCandidate{
+		{Name: "finsec", Runtime: "node", Root: ".", Entry: "app/ui/index.ts", StartCommand: "npm start"},
+		{Name: "backend", Runtime: "python", Root: "app/backend", Entry: "app/backend/main.py", StartCommand: "uvicorn main:app"},
+		{Name: "go-backend", Runtime: "go", Root: "go-backend", Entry: "go-backend/main.go"},
+	}
+
+	selected, err := selectService(bufio.NewReader(strings.NewReader("2\n")), services, "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected.Name != "backend" || selected.Root != "app/backend" || selected.Runtime != "python" {
+		t.Fatalf("selected service = %#v", selected)
+	}
+
+	if _, err := selectService(bufio.NewReader(strings.NewReader("")), services, "", "", true); err == nil {
+		t.Fatal("non-interactive deployment accepted ambiguous services")
+	}
+	saved, err := selectService(bufio.NewReader(strings.NewReader("")), services, "app/backend/main.py", "", true)
+	if err != nil || saved.Root != "app/backend" {
+		t.Fatalf("saved selection = %#v, %v", saved, err)
+	}
+}

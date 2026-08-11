@@ -45,6 +45,17 @@ ignored_dirs:
   - .venv
   - venv
 
+# Tests can contain realistic route declarations, but they are not production
+# endpoints and must not become Nginx allowlist entries or service candidates.
+ignored_files:
+  - "*_test.go"
+  - "test_*.py"
+  - "*_test.py"
+  - "*.test.js"
+  - "*.test.ts"
+  - "*.spec.js"
+  - "*.spec.ts"
+
 scan_files:
   - ".env"
   - ".env.*"

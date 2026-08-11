@@ -1,6 +1,9 @@
 package walker
 
-import "sort"
+import (
+	"sort"
+	"strings"
+)
 
 type EnvHit struct {
 	Name     string `json:"name"`
@@ -50,8 +53,68 @@ type Report struct {
 }
 
 func (r Report) UniqueRoutePaths() []string {
-	seen := map[string]bool{}
+	return uniqueRoutePaths(r.RouteHits)
+}
+
+// RouteHitsUnder returns only routes declared inside a selected service root.
+// This prevents one microservice from inheriting another service's Nginx paths.
+func (r Report) RouteHitsUnder(root string) []RouteHit {
+	root = strings.Trim(strings.TrimSpace(root), "/")
+	if root == "" || root == "." {
+		return append([]RouteHit(nil), r.RouteHits...)
+	}
+	prefix := root + "/"
+	var hits []RouteHit
 	for _, hit := range r.RouteHits {
+		if hit.File == root || strings.HasPrefix(hit.File, prefix) {
+			hits = append(hits, hit)
+		}
+	}
+	return hits
+}
+
+func (r Report) UniqueRoutePathsUnder(root string) []string {
+	return uniqueRoutePaths(r.RouteHitsUnder(root))
+}
+
+// RouteHitsForService removes routes owned by nested detected services. This
+// matters when a repository-root frontend contains separate backend folders.
+func (r Report) RouteHitsForService(service ServiceCandidate) []RouteHit {
+	hits := r.RouteHitsUnder(service.Root)
+	filtered := hits[:0]
+	for _, hit := range hits {
+		ownedByNestedService := false
+		for _, other := range r.Services {
+			if other.Entry == service.Entry || other.Root == "." || other.Root == service.Root {
+				continue
+			}
+			if pathUnderRoot(other.Root, service.Root) && pathUnderRoot(hit.File, other.Root) {
+				ownedByNestedService = true
+				break
+			}
+		}
+		if !ownedByNestedService {
+			filtered = append(filtered, hit)
+		}
+	}
+	return filtered
+}
+
+func (r Report) UniqueRoutePathsForService(service ServiceCandidate) []string {
+	return uniqueRoutePaths(r.RouteHitsForService(service))
+}
+
+func pathUnderRoot(path, root string) bool {
+	root = strings.Trim(strings.TrimSpace(root), "/")
+	if root == "" || root == "." {
+		return true
+	}
+	return path == root || strings.HasPrefix(path, root+"/")
+}
+
+func uniqueRoutePaths(hits []RouteHit) []string {
+	seen := map[string]bool{}
+	for _, hit := range hits {
 		seen[hit.Path] = true
 	}
 	paths := make([]string, 0, len(seen))

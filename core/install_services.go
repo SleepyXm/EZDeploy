@@ -29,17 +29,21 @@ func run(name string, args ...string) error {
 
 // EnsureTools installs only when a deploy needs a command that is not present.
 func EnsureTools(items ...string) error {
-	binaries := map[string]string{
-		"docker": "docker", "nginx": "nginx", "certbot": "certbot",
+	binaries := map[string][]string{
+		"docker": {"docker"}, "nginx": {"nginx"}, "certbot": {"certbot"},
+		"go": {"go"}, "python": {"python3", "pip3"}, "node": {"node", "npm"},
 	}
 	var missing []string
 	for _, item := range items {
-		binary := binaries[item]
-		if binary == "" {
+		required, ok := binaries[item]
+		if !ok {
 			return fmt.Errorf("unknown install item %q", item)
 		}
-		if _, err := exec.LookPath(binary); err != nil {
-			missing = append(missing, item)
+		for _, binary := range required {
+			if _, err := exec.LookPath(binary); err != nil {
+				missing = append(missing, item)
+				break
+			}
 		}
 	}
 	if len(missing) == 0 {

@@ -45,6 +45,27 @@ func goModBinaryName(projectPath string) string {
 	return "app"
 }
 
+// PrepareNativeService installs/builds only the service selected by the user.
+// entry is relative to projectPath and is used to build nested Go cmd targets.
+func PrepareNativeService(projectPath, runtime, entry string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(runtime)) {
+	case "python":
+		return "", installPythonDeps(projectPath)
+	case "go":
+		return buildGoService(projectPath, entry)
+	case "node":
+		if err := installNodeDeps(projectPath); err != nil {
+			return "", err
+		}
+		return DefaultStartCommand(projectPath)
+	default:
+		if err := DownloadDeps(projectPath); err != nil {
+			return "", err
+		}
+		return DefaultStartCommand(projectPath)
+	}
+}
+
 // DownloadDeps auto-detects the project type and installs or builds dependencies.
 func DownloadDeps(projectPath string) error {
 	requirements := filepath.Join(projectPath, "requirements.txt")
@@ -53,38 +74,76 @@ func DownloadDeps(projectPath string) error {
 
 	switch {
 	case fileExists(requirements):
-		fmt.Println("[→] Python project found, installing dependencies...")
-		if err := run("pip", "install", "--ignore-installed", "-r", requirements); err != nil {
-			return fmt.Errorf("pip install: %w", err)
-		}
-		fmt.Println("[✓] Dependencies installed")
+		return installPythonDeps(projectPath)
 
 	case fileExists(goMod):
-		binaryName := goModBinaryName(projectPath)
-		binaryPath := filepath.Join(projectPath, binaryName)
-
-		// Redeployment must rebuild; an existing binary may represent an older commit.
-		fmt.Printf("[→] Go project detected, building binary %s...\n", binaryName)
-		if err := runIn(projectPath, "go", "build", "-buildvcs=false", "-o", binaryName, "."); err != nil {
-			return fmt.Errorf("go build: %w", err)
-		}
-		if err := os.Chmod(binaryPath, 0o755); err != nil {
-			return fmt.Errorf("chmod binary: %w", err)
-		}
-		fmt.Printf("[✓] Binary built: %s\n", binaryName)
+		_, err := buildGoService(projectPath, "")
+		return err
 
 	case fileExists(packageJSON):
-		fmt.Println("[→] Node project found, installing dependencies...")
-		if err := runIn(projectPath, "npm", "install"); err != nil {
-			return fmt.Errorf("npm install: %w", err)
-		}
-		fmt.Println("[✓] Dependencies installed")
+		return installNodeDeps(projectPath)
 
 	default:
 		fmt.Println("[!] No dependency file found. Skipping...")
 	}
 
 	return nil
+}
+
+func installPythonDeps(projectPath string) error {
+	fmt.Println("[→] Python service selected, installing dependencies...")
+	args := []string{"-m", "pip", "install", "--ignore-installed"}
+	if fileExists(filepath.Join(projectPath, "requirements.txt")) {
+		args = append(args, "-r", "requirements.txt")
+	} else if fileExists(filepath.Join(projectPath, "pyproject.toml")) {
+		args = append(args, ".")
+	} else {
+		fmt.Println("[!] No Python dependency manifest found. Skipping...")
+		return nil
+	}
+	if err := runIn(projectPath, "python3", args...); err != nil {
+		return fmt.Errorf("python dependency install: %w", err)
+	}
+	fmt.Println("[✓] Dependencies installed")
+	return nil
+}
+
+func installNodeDeps(projectPath string) error {
+	fmt.Println("[→] Node service selected, installing dependencies...")
+	if err := runIn(projectPath, "npm", "install"); err != nil {
+		return fmt.Errorf("npm install: %w", err)
+	}
+	fmt.Println("[✓] Dependencies installed")
+	return nil
+}
+
+func buildGoService(projectPath, entry string) (string, error) {
+	target := "."
+	binaryName := goModBinaryName(projectPath)
+	if entry = filepath.Clean(filepath.FromSlash(strings.TrimSpace(entry))); entry != "." && entry != "" {
+		if filepath.IsAbs(entry) || entry == ".." || strings.HasPrefix(entry, ".."+string(filepath.Separator)) {
+			return "", fmt.Errorf("Go service entry escapes project root: %s", entry)
+		}
+		if dir := filepath.Dir(entry); dir != "." {
+			target = "./" + filepath.ToSlash(dir)
+			binaryName = filepath.Base(dir)
+		}
+	}
+	if !projectNamePattern.MatchString(binaryName) {
+		return "", fmt.Errorf("cannot derive Go binary name from %q", entry)
+	}
+
+	// Every deployment rebuilds the selected target; an existing binary may
+	// represent an older commit or another cmd/* service in the same module.
+	fmt.Printf("[→] Go service selected, building %s from %s...\n", binaryName, target)
+	if err := runIn(projectPath, "go", "build", "-buildvcs=false", "-o", binaryName, target); err != nil {
+		return "", fmt.Errorf("go build: %w", err)
+	}
+	if err := os.Chmod(filepath.Join(projectPath, binaryName), 0o755); err != nil {
+		return "", fmt.Errorf("chmod binary: %w", err)
+	}
+	fmt.Printf("[✓] Binary built: %s\n", binaryName)
+	return "./" + binaryName, nil
 }
 
 // DefaultStartCommand returns only conventional commands; ambiguous projects

@@ -13,21 +13,24 @@ const (
 
 // Project holds the metadata for a deployed project.
 type Project struct {
-	Path          string `json:"path"`
-	Port          int    `json:"port"`
-	Domain        string `json:"domain"`
-	Email         string `json:"email,omitempty"`
-	RepoURL       string `json:"repo_url"`
-	Branch        string `json:"branch"`
-	Status        string `json:"status"`
-	ServiceName   string `json:"service_name"`
-	StartCommand  string `json:"start_command"`
-	Runtime       string `json:"runtime,omitempty"`
-	Dockerfile    string `json:"dockerfile,omitempty"`
-	DockerContext string `json:"docker_context,omitempty"`
-	ContainerPort int    `json:"container_port,omitempty"`
-	SigningKey    string `json:"signing_key,omitempty"` // Ed25519 private key seed (base64) — never logged
-	SSHKey        string `json:"ssh_key,omitempty"`     // path to SSH private key for private repos
+	Path           string `json:"path"`
+	Port           int    `json:"port"`
+	Domain         string `json:"domain"`
+	Email          string `json:"email,omitempty"`
+	RepoURL        string `json:"repo_url"`
+	Branch         string `json:"branch"`
+	Status         string `json:"status"`
+	ServiceName    string `json:"service_name"`
+	StartCommand   string `json:"start_command"`
+	Runtime        string `json:"runtime,omitempty"`
+	Dockerfile     string `json:"dockerfile,omitempty"`
+	DockerContext  string `json:"docker_context,omitempty"`
+	ContainerPort  int    `json:"container_port,omitempty"`
+	ServiceRoot    string `json:"service_root,omitempty"`
+	ServiceEntry   string `json:"service_entry,omitempty"`
+	ServiceRuntime string `json:"service_runtime,omitempty"`
+	SigningKey     string `json:"signing_key,omitempty"` // Ed25519 private key seed (base64) — never logged
+	SSHKey         string `json:"ssh_key,omitempty"`     // path to SSH private key for private repos
 }
 
 // Registry maps project names to their metadata.
@@ -121,6 +124,9 @@ func RegisterProject(projectName string, project Project) error {
 		existing.Dockerfile = project.Dockerfile
 		existing.DockerContext = project.DockerContext
 		existing.ContainerPort = project.ContainerPort
+		existing.ServiceRoot = project.ServiceRoot
+		existing.ServiceEntry = project.ServiceEntry
+		existing.ServiceRuntime = project.ServiceRuntime
 	} else {
 		if project.ServiceName != "" {
 			existing.ServiceName = project.ServiceName

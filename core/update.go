@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -71,26 +72,37 @@ func pullRedeploySystemd(projectName string, project Project) error {
 	if serviceName == "" {
 		serviceName = "ezdeploy-" + projectName
 	}
+	servicePath := project.Path
+	if project.ServiceRoot != "" && project.ServiceRoot != "." {
+		servicePath = filepath.Join(project.Path, filepath.FromSlash(project.ServiceRoot))
+	}
 
 	// Snapshot before touching the running service so we have something to
 	// restore if the new code crashes on startup.
-	rollback, err := snapshotForRollback(project.Path, projectName)
+	rollback, err := snapshotForRollback(servicePath, projectName)
 	if err != nil {
 		// Non-fatal: warn and proceed without a rollback safety net.
 		fmt.Printf("[!] Rollback snapshot skipped: %v\n", err)
 		rollback = ""
 	}
+	if project.ServiceRuntime != "" {
+		entry := strings.TrimPrefix(project.ServiceEntry, strings.TrimSuffix(project.ServiceRoot, "/")+"/")
+		if _, err := PrepareNativeService(servicePath, project.ServiceRuntime, entry); err != nil {
+			restoreSystemdSnapshot(projectName, servicePath, rollback, serviceName)
+			return fmt.Errorf("prepare updated service: %w", err)
+		}
+	}
 
 	fmt.Printf("[→] Restarting %s...\n", serviceName)
 	if err := run("systemctl", "restart", serviceName); err != nil {
-		restoreSystemdSnapshot(projectName, project.Path, rollback, serviceName)
+		restoreSystemdSnapshot(projectName, servicePath, rollback, serviceName)
 		return fmt.Errorf("systemctl restart %s: %w", serviceName, err)
 	}
 
 	// Poll for up to 5 seconds — enough for most apps to either bind their
 	// port or crash with a config error.
 	if err := waitForSystemdActive(serviceName, 5*time.Second); err != nil {
-		restoreSystemdSnapshot(projectName, project.Path, rollback, serviceName)
+		restoreSystemdSnapshot(projectName, servicePath, rollback, serviceName)
 		return fmt.Errorf("service %s failed to start after update: %w", serviceName, err)
 	}
 

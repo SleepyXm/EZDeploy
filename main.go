@@ -28,6 +28,14 @@ type runtimeSelection struct {
 	ContainerPort int
 }
 
+type serviceSelection struct {
+	Name         string
+	Root         string
+	Entry        string
+	Runtime      string
+	StartCommand string
+}
+
 func (routes *routeList) String() string { return strings.Join(*routes, ",") }
 func (routes *routeList) Set(value string) error {
 	if value = strings.TrimSpace(value); value == "" {
@@ -81,6 +89,7 @@ func deploy(args []string) error {
 	email := flags.String("email", "", "Let's Encrypt email")
 	port := flags.Int("port", 0, "application port")
 	start := flags.String("start", "", "application start command")
+	service := flags.String("service", "", "native service name, root, or entry file")
 	runtimeMode := flags.String("runtime", "", "native or docker")
 	dockerfile := flags.String("dockerfile", "", "production Dockerfile path")
 	dockerContext := flags.String("docker-context", "", "Docker build context relative to the repository")
@@ -125,35 +134,73 @@ func deploy(args []string) error {
 		return fmt.Errorf("scan project: %w", err)
 	}
 	printServiceCandidates(report.Services)
-	routes := append(report.UniqueRoutePaths(), extraRoutes...)
-	if !*noWhitelist && len(routes) == 0 {
-		return fmt.Errorf("no routes discovered; use --allow-route or --no-route-whitelist")
-	}
-	for _, hit := range report.RouteHits {
-		fmt.Printf("  %-7s %-30s %s:%d\n", hit.Method, hit.Path, hit.File, hit.Line)
-	}
 	reader := bufio.NewReader(os.Stdin)
 	runtime, err := selectRuntime(reader, report, existing, *runtimeMode, *dockerfile, *dockerContext, *containerPort, *nonInteractive)
 	if err != nil {
 		return err
 	}
+	selectedService := serviceSelection{Name: "repository root", Root: "."}
+	servicePath := projectPath
+	if runtime.Mode == "native" {
+		savedService := ""
+		if existing.Runtime == "native" {
+			savedService = existing.ServiceEntry
+			if savedService == "" {
+				savedService = existing.ServiceRoot
+			}
+		}
+		selectedService, err = selectService(reader, report.Services, savedService, *service, *nonInteractive)
+		if err != nil {
+			return err
+		}
+		servicePath = filepath.Join(projectPath, filepath.FromSlash(selectedService.Root))
+	} else if strings.TrimSpace(*service) != "" {
+		return fmt.Errorf("--service currently applies to native deployments")
+	}
+
+	routeHits := report.RouteHits
+	routes := report.UniqueRoutePaths()
+	if runtime.Mode == "native" && selectedService.Entry != "" {
+		candidate := walker.ServiceCandidate{Root: selectedService.Root, Entry: selectedService.Entry}
+		routeHits = report.RouteHitsForService(candidate)
+		routes = report.UniqueRoutePathsForService(candidate)
+	}
+	routes = append(routes, extraRoutes...)
+	if !*noWhitelist && len(routes) == 0 {
+		return fmt.Errorf("no routes discovered for service %s; use --allow-route or --no-route-whitelist", selectedService.Name)
+	}
+	for _, hit := range routeHits {
+		fmt.Printf("  %-7s %-30s %s:%d\n", hit.Method, hit.Path, hit.File, hit.Line)
+	}
+
 	tools := []string{"nginx", "certbot"}
 	if runtime.Mode == "docker" {
 		tools = append(tools, "docker")
+	} else if selectedService.Runtime != "" {
+		tools = append(tools, selectedService.Runtime)
 	}
 	if err := core.EnsureTools(tools...); err != nil {
 		return err
 	}
 
+	preparedStart := ""
 	if runtime.Mode == "native" {
-		if err := core.DownloadDeps(projectPath); err != nil {
-			return err
+		if selectedService.Runtime == "" {
+			if err := core.DownloadDeps(servicePath); err != nil {
+				return err
+			}
+		} else {
+			entry := strings.TrimPrefix(selectedService.Entry, strings.TrimSuffix(selectedService.Root, "/")+"/")
+			preparedStart, err = core.PrepareNativeService(servicePath, selectedService.Runtime, entry)
+			if err != nil {
+				return err
+			}
 		}
 	}
 	if *nonInteractive {
-		err = core.SetupEnvNonInteractive(projectPath)
+		err = core.SetupEnvNonInteractive(servicePath)
 	} else {
-		err = core.SetupEnv(projectPath)
+		err = core.SetupEnv(servicePath)
 	}
 	if err != nil {
 		return err
@@ -174,11 +221,18 @@ func deploy(args []string) error {
 	}
 
 	if runtime.Mode == "native" {
-		if *start == "" {
+		sameService := existing.ServiceRoot == selectedService.Root && existing.ServiceEntry == selectedService.Entry
+		if *start == "" && sameService {
 			*start = existing.StartCommand
 		}
 		if *start == "" {
-			*start, err = core.DefaultStartCommand(projectPath)
+			*start = preparedStart
+		}
+		if *start == "" {
+			*start = selectedService.StartCommand
+		}
+		if *start == "" {
+			*start, err = core.DefaultStartCommand(servicePath)
 			if err != nil {
 				return err
 			}
@@ -249,7 +303,7 @@ func deploy(args []string) error {
 				return err
 			}
 		}
-		if err := services.Create(projectName, projectPath, *start, *port); err != nil {
+		if err := services.Create(projectName, servicePath, *start, *port); err != nil {
 			if stoppedDocker {
 				_ = core.StartDocker(projectName)
 			}
@@ -273,6 +327,8 @@ func deploy(args []string) error {
 		StartCommand: *start, Runtime: runtime.Mode,
 		Dockerfile: runtime.Dockerfile, DockerContext: runtime.DockerContext,
 		ContainerPort: runtime.ContainerPort,
+		ServiceRoot:   selectedService.Root, ServiceEntry: selectedService.Entry,
+		ServiceRuntime: selectedService.Runtime,
 	}
 	record.Status = runtime.Mode + "_running"
 	if err := core.RegisterProject(projectName, record); err != nil {
@@ -308,6 +364,72 @@ func printServiceCandidates(services []walker.ServiceCandidate) {
 	}
 	if len(services) > 1 {
 		fmt.Println("[!] Multiple services were found; this deploy still targets the repository as one project.")
+	}
+}
+
+func selectService(reader *bufio.Reader, services []walker.ServiceCandidate, savedSelector, selector string, nonInteractive bool) (serviceSelection, error) {
+	selector = strings.TrimSpace(selector)
+	if selector == "" && strings.TrimSpace(savedSelector) != "" {
+		selector = savedSelector
+	}
+	if selector != "" {
+		return findServiceSelection(services, selector)
+	}
+	if len(services) == 0 {
+		return serviceSelection{Name: "repository root", Root: "."}, nil
+	}
+	if len(services) == 1 {
+		selected := selectionFromCandidate(services[0])
+		fmt.Printf("[✓] Native service: %s (%s)\n", selected.Name, selected.Root)
+		return selected, nil
+	}
+	if nonInteractive {
+		return serviceSelection{}, fmt.Errorf("multiple backend services found; use --service with a service name, root, or entry file")
+	}
+
+	fmt.Println("\nNative service selection:")
+	fmt.Println("  0. Repository root (manual monorepo configuration)")
+	value, err := readPrompt(reader, fmt.Sprintf("Select service [0-%d]: ", len(services)))
+	if err != nil {
+		return serviceSelection{}, err
+	}
+	choice, err := strconv.Atoi(value)
+	if err != nil || choice < 0 || choice > len(services) {
+		return serviceSelection{}, fmt.Errorf("invalid service selection %q", value)
+	}
+	if choice == 0 {
+		return serviceSelection{Name: "repository root", Root: "."}, nil
+	}
+	selected := selectionFromCandidate(services[choice-1])
+	fmt.Printf("[✓] Native service: %s (%s)\n", selected.Name, selected.Root)
+	return selected, nil
+}
+
+func findServiceSelection(services []walker.ServiceCandidate, selector string) (serviceSelection, error) {
+	if selector == "." || strings.EqualFold(selector, "root") {
+		return serviceSelection{Name: "repository root", Root: "."}, nil
+	}
+	var matches []walker.ServiceCandidate
+	for _, service := range services {
+		if service.Name == selector || service.Root == selector || service.Entry == selector {
+			matches = append(matches, service)
+		}
+	}
+	if len(matches) == 0 {
+		return serviceSelection{}, fmt.Errorf("service %q was not discovered", selector)
+	}
+	if len(matches) > 1 {
+		return serviceSelection{}, fmt.Errorf("service name %q is ambiguous; use its root or entry file", selector)
+	}
+	selected := selectionFromCandidate(matches[0])
+	fmt.Printf("[✓] Native service: %s (%s)\n", selected.Name, selected.Root)
+	return selected, nil
+}
+
+func selectionFromCandidate(candidate walker.ServiceCandidate) serviceSelection {
+	return serviceSelection{
+		Name: candidate.Name, Root: candidate.Root, Entry: candidate.Entry,
+		Runtime: candidate.Runtime, StartCommand: candidate.StartCommand,
 	}
 }
 
@@ -515,6 +637,7 @@ func printDeployUsage() {
   --email <address>            Let's Encrypt email
   --port <number>              application port
   --start <command>            application start command
+  --service <name|path>        native service name, root, or entry file
   --runtime <native|docker>    application runtime
   --dockerfile <path>          production Dockerfile path
   --docker-context <path>      Docker build context (default: repository root)

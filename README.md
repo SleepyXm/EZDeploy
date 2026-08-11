@@ -6,7 +6,7 @@ Running `ezdeploy` without a command opens the terminal UI.
 
 ## Setup
 
-The server needs Git, `sudo`, a domain pointed at it, and the application runtime when deploying natively. EZDeploy installs missing Nginx, Certbot, and Docker components on its supported apt/dnf distributions. Go 1.25 or newer is needed only to build EZDeploy itself.
+The server needs Git, `sudo`, and a domain pointed at it. EZDeploy installs a selected native service's missing Go, Python, or Node runtime together with missing Nginx, Certbot, and Docker components on its supported apt/dnf distributions. Go 1.25 or newer is needed only to build EZDeploy itself.
 
 Keep the binary beside `yamls/walk.yml`:
 
@@ -35,6 +35,7 @@ The deploy command clones or fast-forwards the repository, scans it, selects a r
 | `--email <address>` | Set the Let's Encrypt email. |
 | `--port <number>` | Override the host application port. |
 | `--start <command>` | Set a native start command. |
+| `--service <name\|path>` | Select a detected native service by name, root, or entry file. |
 | `--runtime <native\|docker>` | Select native systemd or Docker execution. |
 | `--dockerfile <path>` | Select the production Dockerfile. |
 | `--docker-context <path>` | Set its repository-relative build context. |
@@ -85,7 +86,7 @@ Git updates use `merge --ff-only`; server divergence is rejected rather than ove
 
 Route and Dockerfile rules extend the existing `yamls/walk.yml`. Common literal Go, Express, FastAPI, and Flask routes become Nginx locations; unknown paths return `404`. Dynamic or cross-file routes can be supplied with `--allow-route`, which must be repeated on later deployments.
 
-The same walker lists Python, Go, and Node backend candidates in mixed-language repositories. Each candidate includes its service root, entry file, likely start command, confidence, and the filename, manifest, and server markers that produced the match. Multiple candidates are advisory for now: EZDeploy still deploys the repository as one project until service selection is implemented.
+The same walker lists Python, Go, and Node backend candidates in mixed-language repositories. Each candidate includes its service root, entry file, likely start command, confidence, and the filename, manifest, and server markers that produced the match. Native deployment selects one candidate, then limits dependency installation, environment discovery, routes, and the systemd working directory to that service. Automated deployment with multiple candidates must provide `--service`.
 
 Existing `.env` values are preserved at mode `0600`. Native applications run as `SUDO_USER`, not root. Go applications rebuild on update; conventional commands are detected for Go, `npm start`, and FastAPI `main:app`.
 
@@ -93,7 +94,7 @@ Existing `.env` values are preserved at mode `0600`. Native applications run as 
 
 - Nginx + Certbot is the implemented ingress; Traefik and cloud ingress are later providers.
 - There is no custom HTTP deployment API, application health check, or complete deployment rollback yet.
-- Route discovery is literal, and native monorepo subdirectory selection is not implemented.
+- Route discovery is literal. A repository can currently register one selected native service; deploying several services from the same repository as independently managed applications is not implemented yet.
 - Installation and binary upgrades are not packaged; keep the binary and `yamls` together.
 - Builds execute trusted repository content. Do not deploy an untrusted repository as an administrator.
 
