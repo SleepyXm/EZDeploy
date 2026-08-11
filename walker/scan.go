@@ -3,6 +3,7 @@ package walker
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -17,6 +18,7 @@ import (
 const fallbackMaxFileSizeBytes int64 = 2 * 1024 * 1024
 
 var methodTokenPattern = regexp.MustCompile(`[A-Za-z]+`)
+var pythonAppPattern = regexp.MustCompile(`(?m)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(FastAPI|Flask)\s*\(`)
 
 type Rule struct {
 	Name       string
@@ -54,10 +56,16 @@ type Scanner struct {
 	scanFiles      []string
 	scanExtensions map[string]bool
 	dockerfiles    []string
+	serviceRules   []ServiceRuleDef
 	rules          []Rule
 	routeMethods   map[string]bool
 	routeRules     []RouteRule
 	prefixRules    []PrefixRule
+}
+
+type serviceEntry struct {
+	path  string
+	rules []ServiceRuleDef
 }
 
 func ScanDefault(root string) (Report, error) {
@@ -102,6 +110,7 @@ func NewScanner(cfg *Config) (*Scanner, error) {
 		scanFiles:      cfg.ScanFiles,
 		scanExtensions: map[string]bool{},
 		dockerfiles:    cfg.Dockerfiles,
+		serviceRules:   cfg.ServiceRules,
 		routeMethods:   map[string]bool{},
 	}
 
@@ -259,6 +268,8 @@ func (s *Scanner) Scan(root string) (Report, error) {
 
 	seenHits := map[string]struct{}{}
 	seenRoutes := map[string]struct{}{}
+	manifestDirs := map[string]map[string]bool{}
+	var serviceEntries []serviceEntry
 
 	err = filepath.WalkDir(absRoot, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -281,10 +292,25 @@ func (s *Scanner) Scan(root string) (Report, error) {
 		if s.matchesIgnoredFile(base) {
 			return nil
 		}
+		relPath, relErr := filepath.Rel(absRoot, path)
+		if relErr != nil {
+			relPath = path
+		}
+		relPath = filepath.ToSlash(relPath)
+		if s.matchesServiceManifest(base) {
+			dir := filepath.ToSlash(filepath.Dir(relPath))
+			if manifestDirs[dir] == nil {
+				manifestDirs[dir] = map[string]bool{}
+			}
+			manifestDirs[dir][base] = true
+		}
 
 		lang := s.languageForPath(path)
 		if lang != "" {
 			report.Languages[lang]++
+		}
+		if rules := s.matchingServiceRules(base); len(rules) > 0 {
+			serviceEntries = append(serviceEntries, serviceEntry{path: relPath, rules: rules})
 		}
 
 		if !s.shouldScan(path, lang) {
@@ -326,6 +352,9 @@ func (s *Scanner) Scan(root string) (Report, error) {
 
 		return nil
 	})
+	if err == nil {
+		report.Services = s.discoverServices(absRoot, serviceEntries, manifestDirs)
+	}
 
 	sort.Slice(report.EnvHits, func(i, j int) bool {
 		a := report.EnvHits[i]
@@ -350,8 +379,238 @@ func (s *Scanner) Scan(root string) (Report, error) {
 	sort.Slice(report.Dockerfiles, func(i, j int) bool {
 		return report.Dockerfiles[i].Path < report.Dockerfiles[j].Path
 	})
+	sort.Slice(report.Services, func(i, j int) bool {
+		if report.Services[i].Root != report.Services[j].Root {
+			return report.Services[i].Root < report.Services[j].Root
+		}
+		if report.Services[i].Runtime != report.Services[j].Runtime {
+			return report.Services[i].Runtime < report.Services[j].Runtime
+		}
+		return report.Services[i].Entry < report.Services[j].Entry
+	})
 
 	return report, err
+}
+
+func (s *Scanner) matchingServiceRules(base string) []ServiceRuleDef {
+	var matches []ServiceRuleDef
+	for _, rule := range s.serviceRules {
+		if matchesAnyFilePattern(base, rule.Files) {
+			matches = append(matches, rule)
+		}
+	}
+	return matches
+}
+
+func (s *Scanner) matchesServiceManifest(base string) bool {
+	for _, rule := range s.serviceRules {
+		if matchesAnyFilePattern(base, rule.Manifests) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Scanner) discoverServices(root string, entries []serviceEntry, manifestDirs map[string]map[string]bool) []ServiceCandidate {
+	services := map[string]ServiceCandidate{}
+	for _, entry := range entries {
+		data, _ := os.ReadFile(filepath.Join(root, filepath.FromSlash(entry.path)))
+		if int64(len(data)) > s.maxFileSize {
+			data = nil
+		}
+		for _, rule := range entry.rules {
+			serviceRoot, manifest := nearestServiceManifest(entry.path, rule.Manifests, manifestDirs)
+			markers := serviceMarkers(data, rule.Markers, rule.Runtime)
+			pkg := nodePackage{}
+			if rule.Runtime == "node" && manifest == "package.json" {
+				pkg = readNodePackage(root, serviceRoot)
+			}
+
+			candidate := ServiceCandidate{
+				Name:         serviceName(root, serviceRoot, entry.path, pkg.Name),
+				Runtime:      rule.Runtime,
+				Root:         serviceRoot,
+				Entry:        entry.path,
+				StartCommand: serviceStartCommand(rule.Runtime, serviceRoot, entry.path, data, markers, pkg),
+				Confidence:   serviceConfidence(manifest != "", len(markers) > 0),
+				Evidence:     []string{"entry " + entry.path},
+			}
+			if manifest != "" {
+				candidate.Evidence = append(candidate.Evidence, "manifest "+manifest)
+			}
+			for _, marker := range markers {
+				candidate.Evidence = append(candidate.Evidence, "marker "+marker)
+			}
+			if strings.TrimSpace(pkg.Scripts["start"]) != "" {
+				candidate.Evidence = append(candidate.Evidence, `package.json script "start"`)
+			}
+
+			// Python and Node projects normally have one web entrypoint per
+			// manifest. Go modules may contain several cmd/* binaries, so their
+			// entry directory remains part of the candidate identity.
+			key := rule.Runtime + ":" + serviceRoot
+			if rule.Runtime == "go" {
+				key += ":" + filepath.ToSlash(filepath.Dir(entry.path))
+			}
+			current, exists := services[key]
+			if !exists || confidenceRank(candidate.Confidence) > confidenceRank(current.Confidence) {
+				services[key] = candidate
+			}
+		}
+	}
+
+	result := make([]ServiceCandidate, 0, len(services))
+	for _, service := range services {
+		result = append(result, service)
+	}
+	return result
+}
+
+func nearestServiceManifest(entry string, patterns []string, manifests map[string]map[string]bool) (string, string) {
+	dir := filepath.ToSlash(filepath.Dir(entry))
+	for {
+		// Rule order decides which manifest is reported when a service has
+		// several (for example pyproject.toml and requirements.txt).
+		for _, pattern := range patterns {
+			for name := range manifests[dir] {
+				if matchFilePattern(name, pattern) {
+					return dir, name
+				}
+			}
+		}
+		if dir == "." {
+			break
+		}
+		parent := filepath.ToSlash(filepath.Dir(dir))
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return filepath.ToSlash(filepath.Dir(entry)), ""
+}
+
+func serviceMarkers(data []byte, markers []string, runtime string) []string {
+	found := map[string]bool{}
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || routeCommentLine(line, runtime) {
+			continue
+		}
+		lowerLine := strings.ToLower(line)
+		for _, marker := range markers {
+			if !found[marker] && strings.Contains(lowerLine, strings.ToLower(marker)) {
+				found[marker] = true
+			}
+		}
+	}
+	result := make([]string, 0, len(found))
+	for _, marker := range markers {
+		if found[marker] {
+			result = append(result, marker)
+		}
+	}
+	return result
+}
+
+type nodePackage struct {
+	Name    string            `json:"name"`
+	Scripts map[string]string `json:"scripts"`
+}
+
+func readNodePackage(root, serviceRoot string) nodePackage {
+	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(serviceRoot), "package.json"))
+	if err != nil {
+		return nodePackage{}
+	}
+	var pkg nodePackage
+	_ = json.Unmarshal(data, &pkg)
+	return pkg
+}
+
+func serviceName(repoRoot, serviceRoot, entry, packageName string) string {
+	if strings.TrimSpace(packageName) != "" {
+		return packageName
+	}
+	entryDir := filepath.ToSlash(filepath.Dir(entry))
+	if entryDir != "." && entryDir != serviceRoot {
+		return filepath.Base(entryDir)
+	}
+	if serviceRoot != "." {
+		return filepath.Base(serviceRoot)
+	}
+	return filepath.Base(repoRoot)
+}
+
+func serviceStartCommand(runtime, root, entry string, data []byte, markers []string, pkg nodePackage) string {
+	relEntry, err := filepath.Rel(filepath.FromSlash(root), filepath.FromSlash(entry))
+	if err != nil {
+		relEntry = entry
+	}
+	relEntry = filepath.ToSlash(relEntry)
+
+	switch runtime {
+	case "go":
+		dir := filepath.ToSlash(filepath.Dir(relEntry))
+		if dir == "." {
+			return "go run ."
+		}
+		return "go run ./" + strings.TrimPrefix(dir, "./")
+	case "node":
+		if strings.TrimSpace(pkg.Scripts["start"]) != "" {
+			return "npm start"
+		}
+		if ext := strings.ToLower(filepath.Ext(relEntry)); ext != ".ts" {
+			return "node " + relEntry
+		}
+	case "python":
+		module := strings.TrimSuffix(strings.ReplaceAll(relEntry, "/", "."), filepath.Ext(relEntry))
+		appName := "app"
+		if match := pythonAppPattern.FindSubmatch(data); len(match) > 1 {
+			appName = string(match[1])
+		}
+		if markerPresent(markers, "FastAPI(") {
+			return fmt.Sprintf(`python3 -m uvicorn %s:%s --host 127.0.0.1 --port "$PORT"`, module, appName)
+		}
+		if markerPresent(markers, "Flask(") {
+			return fmt.Sprintf(`python3 -m flask --app %s:%s run --host 127.0.0.1 --port "$PORT"`, module, appName)
+		}
+		if strings.Contains(string(data), `if __name__`) {
+			return "python3 " + relEntry
+		}
+	}
+	return ""
+}
+
+func markerPresent(markers []string, wanted string) bool {
+	for _, marker := range markers {
+		if strings.EqualFold(marker, wanted) {
+			return true
+		}
+	}
+	return false
+}
+
+func serviceConfidence(hasManifest, hasMarker bool) string {
+	if hasManifest && hasMarker {
+		return "high"
+	}
+	if hasManifest || hasMarker {
+		return "medium"
+	}
+	return "low"
+}
+
+func confidenceRank(value string) int {
+	switch value {
+	case "high":
+		return 3
+	case "medium":
+		return 2
+	default:
+		return 1
+	}
 }
 
 func inspectDockerfile(root, path string) (DockerfileInfo, error) {

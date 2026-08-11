@@ -68,6 +68,50 @@ dockerfiles:
   - Dockerfile-*
   - "*.Dockerfile"
 
+# These rules identify possible backend entrypoints. A filename is enough to
+# list a low-confidence candidate; a nearby manifest and server marker raise
+# confidence. Detection never deploys a service without user configuration.
+service_rules:
+  - name: python-backend
+    runtime: python
+    files: [main.py, app.py, server.py, manage.py, asgi.py, wsgi.py]
+    manifests: [pyproject.toml, requirements.txt, Pipfile, setup.py]
+    markers:
+      - "FastAPI("
+      - "Flask("
+      - "uvicorn.run("
+      - "app.run("
+      - "DJANGO_SETTINGS_MODULE"
+      - "get_wsgi_application("
+      - "get_asgi_application("
+      - "HTTPServer("
+
+  - name: go-backend
+    runtime: go
+    files: [main.go]
+    manifests: [go.mod]
+    markers:
+      - "http.ListenAndServe("
+      - "http.ListenAndServeTLS("
+      - "grpc.NewServer("
+      - "gin.Default("
+      - "gin.New("
+      - "echo.New("
+      - "fiber.New("
+
+  - name: node-backend
+    runtime: node
+    files: [server.js, server.mjs, server.cjs, server.ts, app.js, app.mjs, app.cjs, app.ts, index.js, index.mjs, index.cjs, index.ts, main.js, main.ts]
+    manifests: [package.json]
+    markers:
+      - "express("
+      - "fastify("
+      - "createServer("
+      - ".listen("
+      - "NestFactory.create("
+      - "new Koa("
+      - "new Hapi.Server("
+
 # Route rules use named method/path captures; prefix rules use var/prefix and
 # optionally receiver. They intentionally cover EZDeploy's current runtimes.
 route_methods: [GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS]

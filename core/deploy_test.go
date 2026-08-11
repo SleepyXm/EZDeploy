@@ -189,6 +189,80 @@ def login(): pass`,
 	}
 }
 
+func TestWalkerDiscoversMixedBackendServices(t *testing.T) {
+	config, err := walker.LoadConfig(filepath.Join("..", "yamls", "walk.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scanner, err := walker.NewScanner(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	root := t.TempDir()
+	sources := map[string]string{
+		"services/users/pyproject.toml": `[project]
+name = "users"`,
+		"services/users/main.py": `from fastapi import FastAPI
+app = FastAPI()
+@app.get("/users")
+def users(): return []`,
+		"services/payments/go.mod": `module example.com/payments
+go 1.25`,
+		"services/payments/cmd/api/main.go": `package main
+import "net/http"
+func main() { http.ListenAndServe(":8080", nil) }`,
+		"services/notifications/package.json": `{
+  "name": "notifications-api",
+  "scripts": {"start": "node server.js"},
+  "dependencies": {"express": "latest"}
+}`,
+		"services/notifications/server.js": `const express = require("express")
+const app = express()
+app.listen(process.env.PORT)`,
+	}
+	for name, source := range sources {
+		path := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(source), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	report, err := scanner.Scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Services) != 3 {
+		t.Fatalf("services = %#v, want three", report.Services)
+	}
+	byRuntime := map[string]walker.ServiceCandidate{}
+	for _, service := range report.Services {
+		byRuntime[service.Runtime] = service
+	}
+	want := map[string]struct {
+		name, root, entry, start string
+	}{
+		"python": {"users", "services/users", "services/users/main.py", `python3 -m uvicorn main:app --host 127.0.0.1 --port "$PORT"`},
+		"go":     {"api", "services/payments", "services/payments/cmd/api/main.go", "go run ./cmd/api"},
+		"node":   {"notifications-api", "services/notifications", "services/notifications/server.js", "npm start"},
+	}
+	for runtime, expected := range want {
+		service, ok := byRuntime[runtime]
+		if !ok {
+			t.Errorf("missing %s service in %#v", runtime, report.Services)
+			continue
+		}
+		if service.Name != expected.name || service.Root != expected.root ||
+			service.Entry != expected.entry || service.StartCommand != expected.start ||
+			service.Confidence != "high" {
+			t.Errorf("%s service = %#v", runtime, service)
+		}
+	}
+}
+
 func TestDockerRunIsLoopbackOnlyAndPreservesEnvironment(t *testing.T) {
 	project := t.TempDir()
 	if err := os.WriteFile(filepath.Join(project, ".env"), []byte("TOKEN=secret\nPORT=wrong\n"), 0o600); err != nil {

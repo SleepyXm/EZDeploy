@@ -12,18 +12,29 @@ import (
 const defaultConfigPath = "yamls/walk.yml"
 
 type Config struct {
-	Name             string        `yaml:"name"`
-	MaxFileSizeBytes int64         `yaml:"max_file_size_bytes"`
-	Languages        []LanguageDef `yaml:"languages"`
-	IgnoredDirs      []string      `yaml:"ignored_dirs"`
-	IgnoredFiles     []string      `yaml:"ignored_files"`
-	ScanFiles        []string      `yaml:"scan_files"`
-	ScanExtensions   []string      `yaml:"scan_extensions"`
-	Dockerfiles      []string      `yaml:"dockerfiles"`
-	EnvRules         []RuleDef     `yaml:"env_rules"`
-	RouteMethods     []string      `yaml:"route_methods"`
-	PrefixRules      []RuleDef     `yaml:"prefix_rules"`
-	RouteRules       []RuleDef     `yaml:"route_rules"`
+	Name             string           `yaml:"name"`
+	MaxFileSizeBytes int64            `yaml:"max_file_size_bytes"`
+	Languages        []LanguageDef    `yaml:"languages"`
+	IgnoredDirs      []string         `yaml:"ignored_dirs"`
+	IgnoredFiles     []string         `yaml:"ignored_files"`
+	ScanFiles        []string         `yaml:"scan_files"`
+	ScanExtensions   []string         `yaml:"scan_extensions"`
+	Dockerfiles      []string         `yaml:"dockerfiles"`
+	ServiceRules     []ServiceRuleDef `yaml:"service_rules"`
+	EnvRules         []RuleDef        `yaml:"env_rules"`
+	RouteMethods     []string         `yaml:"route_methods"`
+	PrefixRules      []RuleDef        `yaml:"prefix_rules"`
+	RouteRules       []RuleDef        `yaml:"route_rules"`
+}
+
+// ServiceRuleDef keeps entry filenames and backend markers in walk.yml so new
+// frameworks can be recognized without adding another repository walker.
+type ServiceRuleDef struct {
+	Name      string   `yaml:"name"`
+	Runtime   string   `yaml:"runtime"`
+	Files     []string `yaml:"files"`
+	Manifests []string `yaml:"manifests"`
+	Markers   []string `yaml:"markers"`
 }
 
 type LanguageDef struct {

@@ -124,6 +124,7 @@ func deploy(args []string) error {
 	if err != nil {
 		return fmt.Errorf("scan project: %w", err)
 	}
+	printServiceCandidates(report.Services)
 	routes := append(report.UniqueRoutePaths(), extraRoutes...)
 	if !*noWhitelist && len(routes) == 0 {
 		return fmt.Errorf("no routes discovered; use --allow-route or --no-route-whitelist")
@@ -287,6 +288,27 @@ func deploy(args []string) error {
 
 	fmt.Printf("[✓] %s deployed on %s (port %d)\n", projectName, *domain, *port)
 	return nil
+}
+
+func printServiceCandidates(services []walker.ServiceCandidate) {
+	if len(services) == 0 {
+		fmt.Println("[→] No backend service entrypoints detected.")
+		return
+	}
+
+	fmt.Println("\nDetected backend services:")
+	for index, service := range services {
+		fmt.Printf("  %d. %s (%s, %s confidence)\n", index+1, service.Name, service.Runtime, service.Confidence)
+		fmt.Printf("     Root: %s\n", service.Root)
+		fmt.Printf("     Entry: %s\n", service.Entry)
+		if service.StartCommand != "" {
+			fmt.Printf("     Likely start: %s\n", service.StartCommand)
+		}
+		fmt.Printf("     Evidence: %s\n", strings.Join(service.Evidence, ", "))
+	}
+	if len(services) > 1 {
+		fmt.Println("[!] Multiple services were found; this deploy still targets the repository as one project.")
+	}
 }
 
 func selectRuntime(reader *bufio.Reader, report walker.Report, existing core.Project, mode, dockerfile, context string, port int, nonInteractive bool) (runtimeSelection, error) {

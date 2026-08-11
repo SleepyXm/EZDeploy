@@ -26,13 +26,27 @@ type DockerfileInfo struct {
 	ExposedPorts []int  `json:"exposed_ports"`
 }
 
+// ServiceCandidate describes a backend entrypoint without treating detection
+// as permission to deploy it. Evidence and confidence keep filename-based
+// guesses visible to the user instead of silently turning them into services.
+type ServiceCandidate struct {
+	Name         string   `json:"name"`
+	Runtime      string   `json:"runtime"`
+	Root         string   `json:"root"`
+	Entry        string   `json:"entry"`
+	StartCommand string   `json:"start_command,omitempty"`
+	Confidence   string   `json:"confidence"`
+	Evidence     []string `json:"evidence"`
+}
+
 type Report struct {
-	Root         string           `json:"root"`
-	FilesScanned int              `json:"files_scanned"`
-	Languages    map[string]int   `json:"languages"`
-	EnvHits      []EnvHit         `json:"env_hits"`
-	RouteHits    []RouteHit       `json:"route_hits"`
-	Dockerfiles  []DockerfileInfo `json:"dockerfiles"`
+	Root         string             `json:"root"`
+	FilesScanned int                `json:"files_scanned"`
+	Languages    map[string]int     `json:"languages"`
+	EnvHits      []EnvHit           `json:"env_hits"`
+	RouteHits    []RouteHit         `json:"route_hits"`
+	Dockerfiles  []DockerfileInfo   `json:"dockerfiles"`
+	Services     []ServiceCandidate `json:"services"`
 }
 
 func (r Report) UniqueRoutePaths() []string {

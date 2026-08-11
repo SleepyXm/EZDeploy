@@ -85,6 +85,8 @@ Git updates use `merge --ff-only`; server divergence is rejected rather than ove
 
 Route and Dockerfile rules extend the existing `yamls/walk.yml`. Common literal Go, Express, FastAPI, and Flask routes become Nginx locations; unknown paths return `404`. Dynamic or cross-file routes can be supplied with `--allow-route`, which must be repeated on later deployments.
 
+The same walker lists Python, Go, and Node backend candidates in mixed-language repositories. Each candidate includes its service root, entry file, likely start command, confidence, and the filename, manifest, and server markers that produced the match. Multiple candidates are advisory for now: EZDeploy still deploys the repository as one project until service selection is implemented.
+
 Existing `.env` values are preserved at mode `0600`. Native applications run as `SUDO_USER`, not root. Go applications rebuild on update; conventional commands are detected for Go, `npm start`, and FastAPI `main:app`.
 
 ## Current boundaries
@@ -103,4 +105,4 @@ go vet ./...
 go test -race ./...
 ```
 
-Tests cover Git fast-forward updates, environment preservation, Dockerfile discovery and path containment, loopback-only Docker arguments, runtime selection, route-to-Nginx generation, real Nginx parsing when available, and non-root systemd rendering.
+Tests cover Git fast-forward updates, environment preservation, mixed Python/Go/Node service discovery, Dockerfile discovery and path containment, loopback-only Docker arguments, runtime selection, route-to-Nginx generation, real Nginx parsing when available, and non-root systemd rendering.
