@@ -363,7 +363,7 @@ func printServiceCandidates(services []walker.ServiceCandidate) {
 		fmt.Printf("     Evidence: %s\n", strings.Join(service.Evidence, ", "))
 	}
 	if len(services) > 1 {
-		fmt.Println("[!] Multiple services were found; this deploy still targets the repository as one project.")
+		fmt.Println("[→] Multiple services found; choose the service this deployment should run.")
 	}
 }
 
@@ -389,6 +389,9 @@ func selectService(reader *bufio.Reader, services []walker.ServiceCandidate, sav
 
 	fmt.Println("\nNative service selection:")
 	fmt.Println("  0. Repository root (manual monorepo configuration)")
+	for index, service := range services {
+		fmt.Println(serviceOption(index+1, service))
+	}
 	value, err := readPrompt(reader, fmt.Sprintf("Select service [0-%d]: ", len(services)))
 	if err != nil {
 		return serviceSelection{}, err
@@ -403,6 +406,10 @@ func selectService(reader *bufio.Reader, services []walker.ServiceCandidate, sav
 	selected := selectionFromCandidate(services[choice-1])
 	fmt.Printf("[✓] Native service: %s (%s)\n", selected.Name, selected.Root)
 	return selected, nil
+}
+
+func serviceOption(index int, service walker.ServiceCandidate) string {
+	return fmt.Sprintf("  %d. %s (%s) — %s", index, service.Name, service.Runtime, service.Root)
 }
 
 func findServiceSelection(services []walker.ServiceCandidate, selector string) (serviceSelection, error) {

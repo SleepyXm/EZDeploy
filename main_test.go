@@ -53,6 +53,9 @@ func TestServiceSelectionTargetsDetectedRoot(t *testing.T) {
 	if selected.Name != "backend" || selected.Root != "app/backend" || selected.Runtime != "python" {
 		t.Fatalf("selected service = %#v", selected)
 	}
+	if got := serviceOption(2, services[1]); got != "  2. backend (python) — app/backend" {
+		t.Fatalf("service option = %q", got)
+	}
 
 	if _, err := selectService(bufio.NewReader(strings.NewReader("")), services, "", "", true); err == nil {
 		t.Fatal("non-interactive deployment accepted ambiguous services")
