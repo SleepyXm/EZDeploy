@@ -102,6 +102,17 @@ func TestNonInteractiveEnvironmentValidation(t *testing.T) {
 	}
 }
 
+func TestNewProjectRollbackDoesNotRecreateCloneFromTrackedEnv(t *testing.T) {
+	project := t.TempDir()
+	rollback := &DeploymentRollback{projectPath: project, files: map[string]fileState{}}
+	if err := rollback.TrackFile(filepath.Join(project, ".env")); err != nil {
+		t.Fatal(err)
+	}
+	if len(rollback.files) != 0 {
+		t.Fatal("new project environment was captured outside the clone-level rollback")
+	}
+}
+
 func TestRoutesFlowFromSourceIntoNginx(t *testing.T) {
 	config, err := walker.LoadConfig(filepath.Join("..", "yamls", "walk.yml"))
 	if err != nil {
@@ -157,7 +168,15 @@ def login(): pass`,
 		t.Fatalf("production Dockerfile metadata = %#v", production)
 	}
 
-	nginx, _, err := renderNginxConfig(8080, "api.example.com", report.UniqueRoutePaths(), true)
+	var targets []RouteTarget
+	for _, route := range report.UniqueRoutePaths() {
+		port := 8080
+		if route == "/login" {
+			port = 9090 // A second service can own a different route in the same server block.
+		}
+		targets = append(targets, RouteTarget{Path: route, Port: port})
+	}
+	nginx, _, err := renderNginxConfig("api.example.com", targets, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,6 +184,7 @@ def login(): pass`,
 		`location ~ ^/admin/[^/]+/?$`,
 		`location ~ ^/api/users/[^/]+/?$`,
 		`location = /login`,
+		`proxy_pass http://127.0.0.1:9090`,
 		`location ~ ^/v1/items/[^/]+/?$`,
 		"location / {\n        return 404;",
 	} {

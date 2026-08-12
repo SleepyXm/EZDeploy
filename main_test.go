@@ -5,7 +5,9 @@ import (
 	"strings"
 	"testing"
 
+	"EZDeploy/UI"
 	"EZDeploy/core"
+	"EZDeploy/guards"
 	"EZDeploy/walker"
 )
 
@@ -15,7 +17,7 @@ func TestRuntimeSelection(t *testing.T) {
 		{Path: "deploy/Dockerfile.prod", BaseImage: "node:22-alpine", ExposedPorts: []int{8080}},
 	}}
 	tests := []struct {
-		name, input               string
+		name, input, mode, file   string
 		existing                  core.Project
 		nonInteractive, wantError bool
 		wantFile                  string
@@ -25,10 +27,11 @@ func TestRuntimeSelection(t *testing.T) {
 		{name: "saved production choice", nonInteractive: true, wantFile: "deploy/Dockerfile.prod", existing: core.Project{
 			Runtime: "docker", Dockerfile: "deploy/Dockerfile.prod", DockerContext: ".", ContainerPort: 8080,
 		}},
+		{name: "Dockerfile overrides saved native runtime", file: "deploy/Dockerfile.prod", nonInteractive: true, wantFile: "deploy/Dockerfile.prod", existing: core.Project{Runtime: "native"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got, err := selectRuntime(bufio.NewReader(strings.NewReader(test.input)), report, test.existing, "", "", "", 0, test.nonInteractive)
+			got, err := UI.SelectRuntime(bufio.NewReader(strings.NewReader(test.input)), report, test.existing, test.mode, test.file, "", 0, test.nonInteractive)
 			if (err != nil) != test.wantError {
 				t.Fatalf("error = %v", err)
 			}
@@ -46,22 +49,27 @@ func TestServiceSelectionTargetsDetectedRoot(t *testing.T) {
 		{Name: "go-backend", Runtime: "go", Root: "go-backend", Entry: "go-backend/main.go"},
 	}
 
-	selected, err := selectService(bufio.NewReader(strings.NewReader("2\n")), services, "", "", false)
+	selected, err := UI.SelectServices(bufio.NewReader(strings.NewReader("2,3\n")), services, "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if selected.Name != "backend" || selected.Root != "app/backend" || selected.Runtime != "python" {
+	if len(selected) != 2 || selected[0].Name != "backend" || selected[1].Name != "go-backend" {
 		t.Fatalf("selected service = %#v", selected)
 	}
-	if got := serviceOption(2, services[1]); got != "  2. backend (python) — app/backend" {
-		t.Fatalf("service option = %q", got)
-	}
-
-	if _, err := selectService(bufio.NewReader(strings.NewReader("")), services, "", "", true); err == nil {
+	if _, err := UI.SelectServices(bufio.NewReader(strings.NewReader("")), services, "", "", true); err == nil {
 		t.Fatal("non-interactive deployment accepted ambiguous services")
 	}
-	saved, err := selectService(bufio.NewReader(strings.NewReader("")), services, "app/backend/main.py", "", true)
-	if err != nil || saved.Root != "app/backend" {
+	saved, err := UI.SelectServices(bufio.NewReader(strings.NewReader("")), services, "app/backend/main.py,go-backend/main.go", "", true)
+	if err != nil || len(saved) != 2 || saved[0].Root != "app/backend" || saved[1].Root != "go-backend" {
 		t.Fatalf("saved selection = %#v, %v", saved, err)
+	}
+	if _, err := UI.SelectServices(bufio.NewReader(strings.NewReader("0,2\n")), services, "", "", false); err == nil {
+		t.Fatal("repository root was combined with a detected service")
+	}
+	if _, _, err := guards.DeployArguments([]string{"github.com/acme/api", "github.com/acme/worker", "--domain=api.test"}); err == nil {
+		t.Fatal("batch accepted a project-specific flag")
+	}
+	if _, _, err := guards.DeployArguments([]string{"github.com/acme/API", "github.com/acme/api"}); err == nil {
+		t.Fatal("batch accepted colliding system names")
 	}
 }

@@ -143,11 +143,11 @@ func Registry() []Tool {
 			RequiresProject: false,
 			Validate:        alwaysAvailable,
 			Run: func(args map[string]string) error {
-				port, err := core.GetNextPort()
+				ports, err := core.GetNextPorts(1)
 				if err != nil {
 					return err
 				}
-				fmt.Printf("Next available port: %d\n", port)
+				fmt.Printf("Next available port: %d\n", ports[0])
 				return nil
 			},
 		},

@@ -42,30 +42,26 @@ func renderMetrics(registry core.Registry, stats systemStats) {
 	fmt.Fprintln(&b, "[→] EZDeploy Metrics")
 	fmt.Fprintln(&b)
 
-	fmt.Fprintf(&b, "  %-20s %-12s %-8s %-12s %s\n", "PROJECT", "STATUS", "PORT", "MEMORY", "STARTED")
-	fmt.Fprintf(&b, "  %-20s %-12s %-8s %-12s %s\n", "-------", "------", "----", "------", "-------")
+	fmt.Fprintf(&b, "  %-18s %-18s %-12s %-8s %-12s %s\n", "PROJECT", "SERVICE", "STATUS", "PORT", "MEMORY", "STARTED")
+	fmt.Fprintf(&b, "  %-18s %-18s %-12s %-8s %-12s %s\n", "-------", "-------", "------", "----", "------", "-------")
 
 	for name, info := range registry {
-		serviceName := info.ServiceName
-		if serviceName == "" {
-			serviceName = core.ManagedName(name)
+		for _, service := range info.ManagedServices(name) {
+			status, memory, started := service.Status, "unknown", "unknown"
+			if service.Unit != "" {
+				status = getServiceStatus(service.Unit)
+				memory, started = getServiceMemory(service.Unit), getServiceUptime(service.Unit)
+			}
+			statusDisplay := "[✗] " + status
+			if status == "active" {
+				statusDisplay = "[✓] " + status
+			}
+			port := "?"
+			if service.Port != 0 {
+				port = strconv.Itoa(service.Port)
+			}
+			fmt.Fprintf(&b, "  %-18s %-18s %-12s %-8s %-12s %s\n", name, service.Name, statusDisplay, port, memory, started)
 		}
-
-		status := getServiceStatus(serviceName)
-		memory := getServiceMemory(serviceName)
-		started := getServiceUptime(serviceName)
-
-		statusDisplay := "[✗] " + status
-		if status == "active" {
-			statusDisplay = "[✓] " + status
-		}
-
-		port := "?"
-		if info.Port != 0 {
-			port = strconv.Itoa(info.Port)
-		}
-
-		fmt.Fprintf(&b, "  %-20s %-12s %-8s %-12s %s\n", name, statusDisplay, port, memory, started)
 	}
 
 	fmt.Fprintf(&b, "\n  CPU:  %s\n", stats.CPU)
