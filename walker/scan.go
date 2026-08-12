@@ -547,13 +547,13 @@ func serviceStartCommand(runtime, root, entry string, data []byte, markers []str
 			appName = string(match[1])
 		}
 		if markerPresent(markers, "FastAPI(") {
-			return fmt.Sprintf(`python3 -m uvicorn %s:%s --host 127.0.0.1 --port "$PORT"`, module, appName)
+			return fmt.Sprintf(`.venv/bin/python -m uvicorn %s:%s --host 127.0.0.1 --port "$PORT"`, module, appName)
 		}
 		if markerPresent(markers, "Flask(") {
-			return fmt.Sprintf(`python3 -m flask --app %s:%s run --host 127.0.0.1 --port "$PORT"`, module, appName)
+			return fmt.Sprintf(`.venv/bin/python -m flask --app %s:%s run --host 127.0.0.1 --port "$PORT"`, module, appName)
 		}
 		if strings.Contains(string(data), `if __name__`) {
-			return "python3 " + relEntry
+			return filepath.ToSlash(filepath.Join(".venv", "bin", "python")) + " " + relEntry
 		}
 	}
 	return ""

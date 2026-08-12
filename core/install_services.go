@@ -32,7 +32,7 @@ func Run(dir, name string, args ...string) error {
 func EnsureTools(items ...string) error {
 	binaries := map[string][]string{
 		"docker": {"docker"}, "nginx": {"nginx"}, "certbot": {"certbot"},
-		"go": {"go"}, "python": {"python3", "pip3"}, "node": {"node", "npm"},
+		"go": {"go"}, "python": {"python3"}, "node": {"node", "npm"},
 	}
 	var missing []string
 	for _, item := range items {
@@ -40,11 +40,19 @@ func EnsureTools(items ...string) error {
 		if !ok {
 			return fmt.Errorf("unknown install item %q", item)
 		}
+		unavailable := false
 		for _, binary := range required {
 			if _, err := exec.LookPath(binary); err != nil {
-				missing = append(missing, item)
+				unavailable = true
 				break
 			}
+		}
+		// Debian-family systems split ensurepip into python3-venv even when python3 is already installed.
+		if !unavailable && item == "python" {
+			unavailable = exec.Command("python3", "-c", "import ensurepip, venv").Run() != nil
+		}
+		if unavailable {
+			missing = append(missing, item)
 		}
 	}
 	if len(missing) == 0 {
@@ -76,6 +84,7 @@ func Install(items []string, defaultProxy bool) error {
 	}
 	if pm == "apt" {
 		packages["go"] = []string{"golang-go"}
+		packages["python"] = []string{"python3", "python3-pip", "python3-venv"}
 	}
 	for _, runtime := range []string{"go", "python", "node"} {
 		if !set[runtime] {
