@@ -5,22 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 )
 
-// runIn is like run but executes the command in the given working directory.
-func runIn(dir, name string, args ...string) error {
-	cmd := exec.Command(name, args...)
-	cmd.Dir = dir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
-}
-
-// fileExists reports whether path exists on disk.
-func fileExists(path string) bool {
+// FileExists reports whether path exists on disk.
+func FileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
 }
@@ -54,15 +44,9 @@ func PrepareNativeService(projectPath, runtime, entry string) (string, error) {
 	case "go":
 		return buildGoService(projectPath, entry)
 	case "node":
-		if err := installNodeDeps(projectPath); err != nil {
-			return "", err
-		}
-		return DefaultStartCommand(projectPath)
+		return "", installNodeDeps(projectPath)
 	default:
-		if err := DownloadDeps(projectPath); err != nil {
-			return "", err
-		}
-		return DefaultStartCommand(projectPath)
+		return "", DownloadDeps(projectPath)
 	}
 }
 
@@ -73,14 +57,14 @@ func DownloadDeps(projectPath string) error {
 	goMod := filepath.Join(projectPath, "go.mod")
 
 	switch {
-	case fileExists(requirements):
+	case FileExists(requirements):
 		return installPythonDeps(projectPath)
 
-	case fileExists(goMod):
+	case FileExists(goMod):
 		_, err := buildGoService(projectPath, "")
 		return err
 
-	case fileExists(packageJSON):
+	case FileExists(packageJSON):
 		return installNodeDeps(projectPath)
 
 	default:
@@ -93,15 +77,15 @@ func DownloadDeps(projectPath string) error {
 func installPythonDeps(projectPath string) error {
 	fmt.Println("[→] Python service selected, installing dependencies...")
 	args := []string{"-m", "pip", "install", "--ignore-installed"}
-	if fileExists(filepath.Join(projectPath, "requirements.txt")) {
+	if FileExists(filepath.Join(projectPath, "requirements.txt")) {
 		args = append(args, "-r", "requirements.txt")
-	} else if fileExists(filepath.Join(projectPath, "pyproject.toml")) {
+	} else if FileExists(filepath.Join(projectPath, "pyproject.toml")) {
 		args = append(args, ".")
 	} else {
 		fmt.Println("[!] No Python dependency manifest found. Skipping...")
 		return nil
 	}
-	if err := runIn(projectPath, "python3", args...); err != nil {
+	if err := Run(projectPath, "python3", args...); err != nil {
 		return fmt.Errorf("python dependency install: %w", err)
 	}
 	fmt.Println("[✓] Dependencies installed")
@@ -110,7 +94,7 @@ func installPythonDeps(projectPath string) error {
 
 func installNodeDeps(projectPath string) error {
 	fmt.Println("[→] Node service selected, installing dependencies...")
-	if err := runIn(projectPath, "npm", "install"); err != nil {
+	if err := Run(projectPath, "npm", "install"); err != nil {
 		return fmt.Errorf("npm install: %w", err)
 	}
 	fmt.Println("[✓] Dependencies installed")
@@ -136,7 +120,7 @@ func buildGoService(projectPath, entry string) (string, error) {
 	// Every deployment rebuilds the selected target; an existing binary may
 	// represent an older commit or another cmd/* service in the same module.
 	fmt.Printf("[→] Go service selected, building %s from %s...\n", binaryName, target)
-	if err := runIn(projectPath, "go", "build", "-buildvcs=false", "-o", binaryName, target); err != nil {
+	if err := Run(projectPath, "go", "build", "-buildvcs=false", "-o", binaryName, target); err != nil {
 		return "", fmt.Errorf("go build: %w", err)
 	}
 	if err := os.Chmod(filepath.Join(projectPath, binaryName), 0o755); err != nil {
@@ -149,10 +133,10 @@ func buildGoService(projectPath, entry string) (string, error) {
 // DefaultStartCommand returns only conventional commands; ambiguous projects
 // remain user-controlled through the deploy command's --start option.
 func DefaultStartCommand(projectPath string) (string, error) {
-	if fileExists(filepath.Join(projectPath, "go.mod")) {
+	if FileExists(filepath.Join(projectPath, "go.mod")) {
 		return "./" + goModBinaryName(projectPath), nil
 	}
-	if fileExists(filepath.Join(projectPath, "package.json")) {
+	if FileExists(filepath.Join(projectPath, "package.json")) {
 		data, err := os.ReadFile(filepath.Join(projectPath, "package.json"))
 		if err != nil {
 			return "", err

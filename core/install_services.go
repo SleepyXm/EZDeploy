@@ -19,9 +19,10 @@ func getPackageManager() (string, bool) {
 	}
 }
 
-// run executes a command, streaming its output directly to stdout/stderr.
-func run(name string, args ...string) error {
+// Run is the single streamed command runner used by core and services.
+func Run(dir, name string, args ...string) error {
 	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -50,7 +51,7 @@ func EnsureTools(items ...string) error {
 		return nil
 	}
 	fmt.Printf("[→] Installing missing server components: %s\n", strings.Join(missing, ", "))
-	return install(missing, false)
+	return Install(missing, false)
 }
 
 // Install installs the requested language runtimes and infrastructure
@@ -58,11 +59,7 @@ func EnsureTools(items ...string) error {
 // reverse-proxy/SSL stack: if neither is explicitly selected, both are
 // installed automatically as a fallback. If either is explicitly selected,
 // only the selected ones run — no implicit extras.
-func Install(items []string) error {
-	return install(items, true)
-}
-
-func install(items []string, defaultProxy bool) error {
+func Install(items []string, defaultProxy bool) error {
 	pm, ok := getPackageManager()
 	if !ok {
 		return fmt.Errorf("[!] unsupported OS — cannot install dependencies")
@@ -74,38 +71,30 @@ func install(items []string, defaultProxy bool) error {
 		set[strings.ToLower(strings.TrimSpace(it))] = true
 	}
 
-	if set["go"] {
-		fmt.Println("[→] Installing Go...")
-		pkg := "golang"
-		if pm == "apt" {
-			pkg = "golang-go"
-		}
-		if err := run(pm, "install", pkg, "-y"); err != nil {
-			return fmt.Errorf("go install: %w", err)
-		}
+	packages := map[string][]string{
+		"go": {"golang"}, "python": {"python3", "python3-pip"}, "node": {"nodejs", "npm"},
 	}
-
-	if set["python"] {
-		fmt.Println("[→] Installing Python...")
-		if err := run(pm, "install", "python3", "python3-pip", "-y"); err != nil {
-			return fmt.Errorf("python install: %w", err)
-		}
+	if pm == "apt" {
+		packages["go"] = []string{"golang-go"}
 	}
-
-	if set["node"] {
-		fmt.Println("[→] Installing Node...")
-		if err := run(pm, "install", "nodejs", "npm", "-y"); err != nil {
-			return fmt.Errorf("node install: %w", err)
+	for _, runtime := range []string{"go", "python", "node"} {
+		if !set[runtime] {
+			continue
+		}
+		fmt.Printf("[→] Installing %s...\n", strings.ToUpper(runtime[:1])+runtime[1:])
+		args := append([]string{"install"}, packages[runtime]...)
+		if err := Run("", pm, append(args, "-y")...); err != nil {
+			return fmt.Errorf("%s install: %w", runtime, err)
 		}
 	}
 
 	if set["rust"] {
 		fmt.Println("[→] Installing Rust...")
-		if err := run("curl", "--proto", "=https", "--tlsv1.2", "-sSf",
+		if err := Run("", "curl", "--proto", "=https", "--tlsv1.2", "-sSf",
 			"https://sh.rustup.rs", "-o", "/tmp/rustup.sh"); err != nil {
 			return fmt.Errorf("rustup download: %w", err)
 		}
-		if err := run("sh", "/tmp/rustup.sh", "-y"); err != nil {
+		if err := Run("", "sh", "/tmp/rustup.sh", "-y"); err != nil {
 			return fmt.Errorf("rustup install: %w", err)
 		}
 	}
@@ -148,16 +137,13 @@ func installDocker(pm string) error {
 	if pm == "dnf" {
 		pkg = "docker"
 	}
-	if err := run(pm, "install", pkg, "-y"); err != nil {
+	if err := Run("", pm, "install", pkg, "-y"); err != nil {
 		return fmt.Errorf("docker install: %w", err)
 	}
 
 	fmt.Println("[→] Enabling Docker service...")
-	if err := run("systemctl", "enable", "docker"); err != nil {
-		return fmt.Errorf("systemctl enable docker: %w", err)
-	}
-	if err := run("systemctl", "start", "docker"); err != nil {
-		return fmt.Errorf("systemctl start docker: %w", err)
+	if err := enableService("docker"); err != nil {
+		return err
 	}
 
 	fmt.Println("[✓] Docker installed")
@@ -168,16 +154,13 @@ func installDocker(pm string) error {
 // sites-available/sites-enabled layout + nginx.conf patch.
 func installNginx(pm string) error {
 	fmt.Println("[→] Installing nginx...")
-	if err := run(pm, "install", "nginx", "-y"); err != nil {
+	if err := Run("", pm, "install", "nginx", "-y"); err != nil {
 		return fmt.Errorf("nginx install: %w", err)
 	}
 
 	fmt.Println("[→] Configuring nginx service...")
-	if err := run("systemctl", "enable", "nginx"); err != nil {
-		return fmt.Errorf("systemctl enable nginx: %w", err)
-	}
-	if err := run("systemctl", "start", "nginx"); err != nil {
-		return fmt.Errorf("systemctl start nginx: %w", err)
+	if err := enableService("nginx"); err != nil {
+		return err
 	}
 
 	for _, dir := range []string{"/etc/nginx/sites-available", "/etc/nginx/sites-enabled"} {
@@ -227,25 +210,21 @@ func patchNginxConf() error {
 
 func installCertbot(pm string) error {
 	fmt.Println("[→] Installing certbot...")
-
-	switch pm {
-	case "apt":
-		// Simple, dependency-safe path for Ubuntu/Debian.
-		if err := run(pm, "install", "certbot", "python3-certbot-nginx", "-y"); err != nil {
-			return fmt.Errorf("certbot apt install: %w", err)
-		}
-
-	case "dnf":
-		// Works only where these packages are available.
-		// Amazon Linux may need extra repo handling later.
-		if err := run(pm, "install", "certbot", "python3-certbot-nginx", "-y"); err != nil {
-			return fmt.Errorf("certbot dnf install: %w", err)
-		}
-
-	default:
+	if pm != "apt" && pm != "dnf" {
 		return fmt.Errorf("certbot install: unsupported package manager %q", pm)
 	}
-
+	if err := Run("", pm, "install", "certbot", "python3-certbot-nginx", "-y"); err != nil {
+		return fmt.Errorf("certbot %s install: %w", pm, err)
+	}
 	fmt.Println("[✓] certbot installed")
+	return nil
+}
+
+func enableService(name string) error {
+	for _, action := range []string{"enable", "start"} {
+		if err := Run("", "systemctl", action, name); err != nil {
+			return fmt.Errorf("systemctl %s %s: %w", action, name, err)
+		}
+	}
 	return nil
 }

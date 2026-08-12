@@ -102,7 +102,7 @@ func CreateNginxConfig(projectName string, port int, domain, email string, route
 	}
 
 	createdLink := false
-	if !fileExists(symlinkPath) {
+	if !FileExists(symlinkPath) {
 		if err := os.Symlink(configPath, symlinkPath); err != nil {
 			restoreNginxConfig(configPath, previous, hadPrevious)
 			return fmt.Errorf("symlink sites-enabled: %w", err)
@@ -111,14 +111,14 @@ func CreateNginxConfig(projectName string, port int, domain, email string, route
 	}
 
 	// A rejected config never replaces the last known valid file.
-	if err := run("nginx", "-t"); err != nil {
+	if err := Run("", "nginx", "-t"); err != nil {
 		restoreNginxConfig(configPath, previous, hadPrevious)
 		if createdLink {
 			_ = os.Remove(symlinkPath)
 		}
 		return fmt.Errorf("nginx -t: %w", err)
 	}
-	if err := run("systemctl", "reload", "nginx"); err != nil {
+	if err := Run("", "systemctl", "reload", "nginx"); err != nil {
 		return fmt.Errorf("systemctl reload nginx: %w", err)
 	}
 
@@ -196,7 +196,7 @@ func restoreNginxConfig(path string, previous []byte, existed bool) {
 
 func setupSSL(domain, email string) error {
 	fmt.Printf("[→] Setting up SSL for %s...\n", domain)
-	if err := run("certbot", "--nginx", "-d", domain, "--non-interactive", "--agree-tos", "--redirect", "-m", email); err != nil {
+	if err := Run("", "certbot", "--nginx", "-d", domain, "--non-interactive", "--agree-tos", "--redirect", "-m", email); err != nil {
 		return fmt.Errorf("certbot: %w", err)
 	}
 	fmt.Printf("[✓] SSL configured, %s is now HTTPS\n", domain)

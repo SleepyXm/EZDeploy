@@ -14,13 +14,15 @@ const CloneDir = "./projects"
 
 var projectNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
+// ManagedName is the canonical systemd and Docker container name.
+func ManagedName(projectName string) string {
+	name := strings.NewReplacer("_", "-", " ", "-").Replace(strings.ToLower(projectName))
+	return "ezdeploy-" + name
+}
+
 type CloneOptions struct {
 	Branch string
 	SSHKey string
-}
-
-func CloneRepo(repoURL string) (string, error) {
-	return CloneRepoWithOptions(repoURL, CloneOptions{})
 }
 
 // CloneRepoWithOptions supports public URLs and one explicit private-repo key.
@@ -57,7 +59,7 @@ func CloneRepoWithOptions(repoURL string, options CloneOptions) (string, error) 
 	}
 	dest := filepath.Join(CloneDir, projectName)
 	if info, err := os.Stat(dest); err == nil {
-		if !info.IsDir() || !fileExists(filepath.Join(dest, ".git")) {
+		if !info.IsDir() || !FileExists(filepath.Join(dest, ".git")) {
 			return "", fmt.Errorf("%s exists but is not a git repository", dest)
 		}
 		origin, err := gitOutput(dest, "remote", "get-url", "origin")

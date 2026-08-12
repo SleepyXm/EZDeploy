@@ -20,7 +20,7 @@ func Metrics() error {
 			return err
 		}
 
-		stats := getSystemStats()
+		stats := systemStats{CPU: getCPUUsage(), RAM: getRAMUsage(), Disk: getDiskUsage()}
 		renderMetrics(registry, stats)
 
 		time.Sleep(5 * time.Second)
@@ -48,7 +48,7 @@ func renderMetrics(registry core.Registry, stats systemStats) {
 	for name, info := range registry {
 		serviceName := info.ServiceName
 		if serviceName == "" {
-			serviceName = Name(name)
+			serviceName = core.ManagedName(name)
 		}
 
 		status := getServiceStatus(serviceName)
@@ -93,33 +93,18 @@ func getServiceStatus(serviceName string) string {
 }
 
 func getServiceUptime(serviceName string) string {
-	out, err := commandOutput("systemctl", "show", serviceName, "--property=ActiveEnterTimestamp")
-	if err != nil {
-		return "unknown"
-	}
-
-	line := strings.TrimSpace(out)
-	_, value, ok := strings.Cut(line, "=")
-	if !ok || strings.TrimSpace(value) == "" {
-		return "unknown"
-	}
-
-	return strings.TrimSpace(value)
-}
-
-func getServiceMemory(serviceName string) string {
-	out, err := commandOutput("systemctl", "show", serviceName, "--property=MemoryCurrent")
-	if err != nil {
-		return "unknown"
-	}
-
-	line := strings.TrimSpace(out)
-	_, value, ok := strings.Cut(line, "=")
+	value, ok := systemdProperty(serviceName, "ActiveEnterTimestamp")
 	if !ok {
 		return "unknown"
 	}
+	return value
+}
 
-	value = strings.TrimSpace(value)
+func getServiceMemory(serviceName string) string {
+	value, ok := systemdProperty(serviceName, "MemoryCurrent")
+	if !ok {
+		return "unknown"
+	}
 	bytes, err := strconv.ParseFloat(value, 64)
 	if err != nil {
 		return "unknown"
@@ -129,12 +114,14 @@ func getServiceMemory(serviceName string) string {
 	return fmt.Sprintf("%.1fMB", mb)
 }
 
-func getSystemStats() systemStats {
-	return systemStats{
-		CPU:  getCPUUsage(),
-		RAM:  getRAMUsage(),
-		Disk: getDiskUsage(),
+func systemdProperty(serviceName, property string) (string, bool) {
+	out, err := commandOutput("systemctl", "show", serviceName, "--property="+property)
+	if err != nil {
+		return "", false
 	}
+	_, value, ok := strings.Cut(strings.TrimSpace(out), "=")
+	value = strings.TrimSpace(value)
+	return value, ok && value != ""
 }
 
 func getCPUUsage() string {

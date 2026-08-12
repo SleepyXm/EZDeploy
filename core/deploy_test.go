@@ -79,7 +79,7 @@ func TestNonInteractiveEnvironmentValidation(t *testing.T) {
 	}
 	t.Chdir(repoRoot)
 
-	if err := SetupEnvNonInteractive(project); err != nil {
+	if err := SetupEnv(project, false); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(envPath)
@@ -97,7 +97,7 @@ func TestNonInteractiveEnvironmentValidation(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(project, "main.go"), []byte(`os.Getenv("NEW_TOKEN")`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := SetupEnvNonInteractive(project); err == nil || !strings.Contains(err.Error(), "NEW_TOKEN") {
+	if err := SetupEnv(project, false); err == nil || !strings.Contains(err.Error(), "NEW_TOKEN") {
 		t.Fatalf("missing key error = %v", err)
 	}
 }

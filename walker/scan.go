@@ -69,21 +69,7 @@ type serviceEntry struct {
 }
 
 func ScanDefault(root string) (Report, error) {
-	cfg, err := LoadDefaultConfig()
-	if err != nil {
-		return Report{}, err
-	}
-
-	scanner, err := NewScanner(cfg)
-	if err != nil {
-		return Report{}, err
-	}
-
-	return scanner.Scan(root)
-}
-
-func Scan(root string, configPath string) (Report, error) {
-	cfg, err := LoadConfig(configPath)
+	cfg, err := LoadConfig("")
 	if err != nil {
 		return Report{}, err
 	}
@@ -230,16 +216,6 @@ func compileRule(def RuleDef) (Rule, error) {
 		return Rule{}, fmt.Errorf("env rule %q must expose (?P<name>...)", def.Name)
 	}
 
-	langs := map[string]bool{}
-	if def.Language != "" {
-		langs[def.Language] = true
-	}
-	for _, lang := range def.Languages {
-		if lang != "" {
-			langs[lang] = true
-		}
-	}
-
 	exts := map[string]bool{}
 	for _, ext := range def.Extensions {
 		exts[normalizeExt(ext)] = true
@@ -247,7 +223,7 @@ func compileRule(def RuleDef) (Rule, error) {
 
 	return Rule{
 		Name:       def.Name,
-		Languages:  langs,
+		Languages:  languageSet(def),
 		Extensions: exts,
 		Files:      def.Files,
 		Re:         re,
@@ -289,7 +265,7 @@ func (s *Scanner) Scan(root string) (Report, error) {
 		}
 
 		base := filepath.Base(path)
-		if s.matchesIgnoredFile(base) {
+		if matchesAnyFilePattern(base, s.ignoredFiles) {
 			return nil
 		}
 		relPath, relErr := filepath.Rel(absRoot, path)
@@ -305,7 +281,7 @@ func (s *Scanner) Scan(root string) (Report, error) {
 			manifestDirs[dir][base] = true
 		}
 
-		lang := s.languageForPath(path)
+		lang := s.languageByExt[normalizeExt(filepath.Ext(path))]
 		if lang != "" {
 			report.Languages[lang]++
 		}
@@ -866,15 +842,6 @@ func (s *Scanner) matchesDockerfile(base string) bool {
 		}
 	}
 	return false
-}
-
-func (s *Scanner) languageForPath(path string) string {
-	ext := normalizeExt(filepath.Ext(path))
-	return s.languageByExt[ext]
-}
-
-func (s *Scanner) matchesIgnoredFile(base string) bool {
-	return matchesAnyFilePattern(base, s.ignoredFiles)
 }
 
 func (r Rule) applies(path string, lang string) bool {

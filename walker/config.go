@@ -9,8 +9,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const defaultConfigPath = "yamls/walk.yml"
-
 type Config struct {
 	Name             string           `yaml:"name"`
 	MaxFileSizeBytes int64            `yaml:"max_file_size_bytes"`
@@ -50,10 +48,6 @@ type RuleDef struct {
 	Files      []string `yaml:"files"`
 	Pattern    string   `yaml:"pattern"`
 	Multi      bool     `yaml:"multi"`
-}
-
-func LoadDefaultConfig() (*Config, error) {
-	return LoadConfig("")
 }
 
 func LoadConfig(path string) (*Config, error) {

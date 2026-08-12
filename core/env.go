@@ -1,7 +1,6 @@
 package core
 
 import (
-	"EZDeploy/UI/pretty"
 	"EZDeploy/walker"
 	"fmt"
 	"os"
@@ -10,16 +9,9 @@ import (
 	"strings"
 )
 
-func SetupEnv(projectPath string) error {
-	return setupEnv(projectPath, true)
-}
-
-// SetupEnvNonInteractive validates discovered keys without waiting for terminal input.
-func SetupEnvNonInteractive(projectPath string) error {
-	return setupEnv(projectPath, false)
-}
-
-func setupEnv(projectPath string, interactive bool) error {
+// SetupEnv discovers and writes environment values. Interactive deployments
+// prompt for missing values; automated deployments reject them.
+func SetupEnv(projectPath string, interactive bool) error {
 	envOutput := filepath.Join(projectPath, ".env")
 	envValues := map[string]string{}
 	existing, err := os.ReadFile(envOutput)
@@ -39,7 +31,7 @@ func setupEnv(projectPath string, interactive bool) error {
 		if !interactive {
 			return fmt.Errorf("environment discovery: %w", err)
 		}
-		pretty.Printf("[!] Env discovery skipped: %v\n", err)
+		fmt.Printf("[!] Env discovery skipped: %v\n", err)
 	} else {
 		if interactive {
 			printEnvDiscoveryReport(report)
@@ -75,7 +67,7 @@ func setupEnv(projectPath string, interactive bool) error {
 		return nil
 	}
 
-	pretty.Printf("\n[→] Add extra environment variables (leave key blank when done):\n\n")
+	fmt.Printf("\n[→] Add extra environment variables (leave key blank when done):\n\n")
 
 	for {
 		key, err := input("Key: ")
@@ -88,7 +80,7 @@ func setupEnv(projectPath string, interactive bool) error {
 			break
 		}
 		if existingKeys[key] {
-			pretty.Printf("[!] %s already exists; preserving its value\n", key)
+			fmt.Printf("[!] %s already exists; preserving its value\n", key)
 			continue
 		}
 
@@ -190,7 +182,7 @@ func input(prompt string) (string, error) {
 
 func printEnvDiscoveryReport(report walker.Report) {
 	if len(report.Languages) > 0 {
-		pretty.Println("\n[→] Detected languages:")
+		fmt.Println("\n[→] Detected languages:")
 
 		langs := make([]string, 0, len(report.Languages))
 		for lang := range report.Languages {
@@ -205,15 +197,15 @@ func printEnvDiscoveryReport(report walker.Report) {
 	}
 
 	if len(report.EnvHits) == 0 {
-		pretty.Println("\n[→] No environment variables discovered automatically.")
+		fmt.Println("\n[→] No environment variables discovered automatically.")
 		return
 	}
 
-	pretty.Println("\n[→] Discovered environment variables:")
+	fmt.Println("\n[→] Discovered environment variables:")
 
 	for _, hit := range report.EnvHits {
-		pretty.Printf("  - %-30s %s:%d  [%s]\n", hit.Name, hit.Path, hit.Line, hit.Rule)
+		fmt.Printf("  - %-30s %s:%d  [%s]\n", hit.Name, hit.Path, hit.Line, hit.Rule)
 	}
 
-	pretty.Println("\n[→] Enter values for discovered variables:")
+	fmt.Println("\n[→] Enter values for discovered variables:")
 }

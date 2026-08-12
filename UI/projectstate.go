@@ -2,19 +2,14 @@ package UI
 
 import "EZDeploy/core"
 
-func activeProjectFromRegistry() *Project {
-	reg, err := core.GetProjects()
+func activeProjectFromRegistry() string {
+	reg, err := core.GetRegistry()
 	if err != nil || len(reg) == 0 {
-		return nil
+		return ""
 	}
 
-	for name, p := range reg {
-		return &Project{
-			Path:    p.Path,
-			Name:    name,
-			RepoURL: p.RepoURL,
-		}
+	for name := range reg {
+		return name
 	}
-
-	return nil
+	return ""
 }

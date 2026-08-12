@@ -12,8 +12,8 @@ func (m Model) View() string {
 	b.WriteString(subtitleStyle.Render("deployment toolkit — tool registry"))
 	b.WriteString("\n")
 
-	if m.project != nil {
-		b.WriteString(projectBarStyle.Render(fmt.Sprintf("active project: %s (%s)", m.project.Name, m.project.Path)))
+	if m.project != "" {
+		b.WriteString(projectBarStyle.Render("active project: " + m.project))
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
@@ -36,7 +36,7 @@ func (m Model) renderList() string {
 	var b strings.Builder
 	for i, e := range m.entries {
 		cursor := "  "
-		locked := e.tool.RequiresProject && m.project == nil
+		locked := e.tool.RequiresProject && m.project == ""
 
 		line := nameStyle.Render(e.tool.Name)
 		switch {
@@ -52,7 +52,7 @@ func (m Model) renderList() string {
 
 		desc := e.tool.Description
 		if locked {
-			desc += " (needs active project — run CloneRepo first)"
+			desc += " (needs an existing deployment)"
 		}
 		line += "  " + descStyle.Render(desc)
 

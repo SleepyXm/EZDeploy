@@ -11,6 +11,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if !ok {
 		return m, nil
 	}
+	if keyMsg.String() == "ctrl+c" {
+		m.quitting = true
+		return m, tea.Quit
+	}
 	switch m.view {
 	case viewList:
 		return m.updateList(keyMsg)
@@ -26,7 +30,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "ctrl+c", "q":
+	case "q":
 		m.quitting = true
 		return m, tea.Quit
 	case "up", "k":
@@ -50,9 +54,9 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.lastMsg = fmt.Sprintf("%s skipped: %s", sel.tool.Name, sel.detail)
 			return m, nil
 		}
-		if sel.tool.RequiresProject && m.project == nil {
+		if sel.tool.RequiresProject && m.project == "" {
 			m.lastOK = false
-			m.lastMsg = fmt.Sprintf("%s locked: clone a repo first (select CloneRepo)", sel.tool.Name)
+			m.lastMsg = fmt.Sprintf("%s locked: deploy a project first", sel.tool.Name)
 			return m, nil
 		}
 		m.startTool(sel.tool)
@@ -67,9 +71,6 @@ func (m Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg.String() {
-	case "ctrl+c":
-		m.quitting = true
-		return m, tea.Quit
 	case "esc":
 		m.retreatField()
 		return m, nil
@@ -84,9 +85,6 @@ func (m Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) updateMultiSelect(msg tea.KeyMsg, f Field) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "ctrl+c":
-		m.quitting = true
-		return m, tea.Quit
 	case "esc":
 		m.retreatField()
 		return m, nil
@@ -108,9 +106,6 @@ func (m Model) updateMultiSelect(msg tea.KeyMsg, f Field) (tea.Model, tea.Cmd) {
 
 func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "ctrl+c":
-		m.quitting = true
-		return m, tea.Quit
 	case "esc":
 		if len(m.pendingFlds) > 0 {
 			m.fieldIdx = len(m.pendingFlds) - 1
@@ -131,7 +126,7 @@ func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) updateResult(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "ctrl+c", "q":
+	case "q":
 		m.quitting = true
 		return m, tea.Quit
 	case "enter", "esc":

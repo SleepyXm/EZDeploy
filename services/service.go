@@ -1,34 +1,35 @@
 package services
 
 import (
-	"EZDeploy/core"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"EZDeploy/core"
 )
 
 const systemdDir = "/etc/systemd/system"
 
-func Create(projectName, projectPath, startCommand string, port int) error {
+// Create writes and enables the unit; deployment owns the registry update.
+func Create(projectName, projectPath, startCommand string, port int) (string, error) {
 	if projectName == "" {
-		return fmt.Errorf("projectName is required")
+		return "", fmt.Errorf("projectName is required")
 	}
 	if projectPath == "" {
-		return fmt.Errorf("projectPath is required")
+		return "", fmt.Errorf("projectPath is required")
 	}
 	if startCommand == "" {
-		return fmt.Errorf("startCommand is required")
+		return "", fmt.Errorf("startCommand is required")
 	}
 	if port == 0 {
-		return fmt.Errorf("port is required")
+		return "", fmt.Errorf("port is required")
 	}
 	serviceUser, uid, gid, err := deploymentUser()
 	if err != nil {
-		return err
+		return "", err
 	}
 	// The application runs as the sudo caller, so its managed project must be writable by that account.
 	if err := filepath.WalkDir(projectPath, func(path string, _ os.DirEntry, walkErr error) error {
@@ -37,38 +38,28 @@ func Create(projectName, projectPath, startCommand string, port int) error {
 		}
 		return os.Lchown(path, uid, gid)
 	}); err != nil {
-		return fmt.Errorf("set project ownership: %w", err)
+		return "", fmt.Errorf("set project ownership: %w", err)
 	}
 
-	name := Name(projectName)
+	name := core.ManagedName(projectName)
 	unitPath := filepath.Join(systemdDir, name+".service")
 
 	unit := renderUnit(projectName, projectPath, startCommand, port, serviceUser)
 
 	if err := os.WriteFile(unitPath, []byte(unit), 0o644); err != nil {
-		return fmt.Errorf("write systemd unit: %w", err)
+		return "", fmt.Errorf("write systemd unit: %w", err)
 	}
 
-	if err := run("systemctl", "daemon-reload"); err != nil {
-		return fmt.Errorf("systemctl daemon-reload: %w", err)
+	if err := core.Run("", "systemctl", "daemon-reload"); err != nil {
+		return "", fmt.Errorf("systemctl daemon-reload: %w", err)
 	}
 
-	if err := run("systemctl", "enable", name); err != nil {
-		return fmt.Errorf("systemctl enable %s: %w", name, err)
-	}
-
-	if err := core.RegisterProject(projectName, core.Project{
-		Path:         projectPath,
-		Port:         port,
-		ServiceName:  name,
-		StartCommand: startCommand,
-		Status:       "service_created",
-	}); err != nil {
-		return err
+	if err := core.Run("", "systemctl", "enable", name); err != nil {
+		return "", fmt.Errorf("systemctl enable %s: %w", name, err)
 	}
 
 	fmt.Printf("[✓] Service created: %s\n", name)
-	return nil
+	return name, nil
 }
 
 func renderUnit(projectName, projectPath, startCommand string, port int, serviceUser string) string {
@@ -113,53 +104,18 @@ func deploymentUser() (string, int, int, error) {
 	return account.Username, uid, gid, nil
 }
 
-func Start(projectName string) error {
-	return action(projectName, "start", "running")
-}
-
-func Stop(projectName string) error {
-	return action(projectName, "stop", "stopped")
-}
-
-func Restart(projectName string) error {
-	return action(projectName, "restart", "restarted")
-}
-
-func Reload(projectName string) error {
-	return action(projectName, "reload", "reloaded")
-}
-
-func Status(projectName string) error {
+// Action is the single project-level systemd action path.
+func Action(projectName, actionName string) error {
+	status, ok := map[string]string{"start": "running", "stop": "stopped", "restart": "restarted", "reload": "reloaded"}[actionName]
+	if !ok {
+		return fmt.Errorf("unsupported service action %q", actionName)
+	}
 	name, err := registeredName(projectName)
 	if err != nil {
 		return err
 	}
 
-	cmd := exec.Command("systemctl", "status", name, "--no-pager")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
-}
-
-func Logs(projectName string) error {
-	name, err := registeredName(projectName)
-	if err != nil {
-		return err
-	}
-
-	cmd := exec.Command("journalctl", "-u", name, "-n", "80", "--no-pager")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
-}
-
-func action(projectName, actionName, status string) error {
-	name, err := registeredName(projectName)
-	if err != nil {
-		return err
-	}
-
-	if err := run("systemctl", actionName, name); err != nil {
+	if err := core.Run("", "systemctl", actionName, name); err != nil {
 		return fmt.Errorf("systemctl %s %s: %w", actionName, name, err)
 	}
 
@@ -184,19 +140,5 @@ func registeredName(projectName string) (string, error) {
 		return p.ServiceName, nil
 	}
 
-	return Name(projectName), nil
-}
-
-func Name(projectName string) string {
-	name := strings.ToLower(projectName)
-	name = strings.ReplaceAll(name, "_", "-")
-	name = strings.ReplaceAll(name, " ", "-")
-	return "ezdeploy-" + name
-}
-
-func run(name string, args ...string) error {
-	cmd := exec.Command(name, args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	return core.ManagedName(projectName), nil
 }

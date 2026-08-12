@@ -28,14 +28,6 @@ type runtimeSelection struct {
 	ContainerPort int
 }
 
-type serviceSelection struct {
-	Name         string
-	Root         string
-	Entry        string
-	Runtime      string
-	StartCommand string
-}
-
 func (routes *routeList) String() string { return strings.Join(*routes, ",") }
 func (routes *routeList) Set(value string) error {
 	if value = strings.TrimSpace(value); value == "" {
@@ -139,7 +131,7 @@ func deploy(args []string) error {
 	if err != nil {
 		return err
 	}
-	selectedService := serviceSelection{Name: "repository root", Root: "."}
+	selectedService := walker.ServiceCandidate{Name: "repository root", Root: "."}
 	servicePath := projectPath
 	if runtime.Mode == "native" {
 		savedService := ""
@@ -174,6 +166,7 @@ func deploy(args []string) error {
 	}
 
 	tools := []string{"nginx", "certbot"}
+	serviceName := ""
 	if runtime.Mode == "docker" {
 		tools = append(tools, "docker")
 	} else if selectedService.Runtime != "" {
@@ -197,11 +190,7 @@ func deploy(args []string) error {
 			}
 		}
 	}
-	if *nonInteractive {
-		err = core.SetupEnvNonInteractive(servicePath)
-	} else {
-		err = core.SetupEnv(servicePath)
-	}
+	err = core.SetupEnv(servicePath, !*nonInteractive)
 	if err != nil {
 		return err
 	}
@@ -281,7 +270,7 @@ func deploy(args []string) error {
 	if runtime.Mode == "docker" {
 		stoppedNative := existing.ServiceName != "" && existing.Runtime != "docker"
 		if stoppedNative {
-			if err := services.Stop(projectName); err != nil {
+			if err := services.Action(projectName, "stop"); err != nil {
 				return err
 			}
 		}
@@ -292,34 +281,32 @@ func deploy(args []string) error {
 		})
 		if err != nil {
 			if stoppedNative {
-				_ = services.Start(projectName)
+				_ = services.Action(projectName, "start")
 			}
 			return err
 		}
 	} else {
 		stoppedDocker := existing.Runtime == "docker"
 		if stoppedDocker {
-			if err := core.StopDocker(projectName); err != nil {
+			if err := core.DockerAction(projectName, "stop"); err != nil {
 				return err
 			}
 		}
-		if err := services.Create(projectName, servicePath, *start, *port); err != nil {
+		var createErr error
+		serviceName, createErr = services.Create(projectName, servicePath, *start, *port)
+		if createErr != nil {
 			if stoppedDocker {
-				_ = core.StartDocker(projectName)
+				_ = core.DockerAction(projectName, "start")
 			}
-			return err
+			return createErr
 		}
 		// Restart also starts an inactive unit and guarantees updated code is loaded.
-		if err := services.Restart(projectName); err != nil {
+		if err := core.Run("", "systemctl", "restart", serviceName); err != nil {
 			if stoppedDocker {
-				_ = core.StartDocker(projectName)
+				_ = core.DockerAction(projectName, "start")
 			}
 			return err
 		}
-	}
-	serviceName := ""
-	if runtime.Mode == "native" {
-		serviceName = services.Name(projectName)
 	}
 	record := core.Project{
 		Path: projectPath, Port: *port, Domain: *domain, Email: *email, RepoURL: repoURL,
@@ -329,10 +316,6 @@ func deploy(args []string) error {
 		ContainerPort: runtime.ContainerPort,
 		ServiceRoot:   selectedService.Root, ServiceEntry: selectedService.Entry,
 		ServiceRuntime: selectedService.Runtime,
-	}
-	record.Status = runtime.Mode + "_running"
-	if err := core.RegisterProject(projectName, record); err != nil {
-		return err
 	}
 	if err := core.CreateNginxConfig(projectName, *port, *domain, *email, routes, !*noWhitelist); err != nil {
 		return err
@@ -367,7 +350,7 @@ func printServiceCandidates(services []walker.ServiceCandidate) {
 	}
 }
 
-func selectService(reader *bufio.Reader, services []walker.ServiceCandidate, savedSelector, selector string, nonInteractive bool) (serviceSelection, error) {
+func selectService(reader *bufio.Reader, services []walker.ServiceCandidate, savedSelector, selector string, nonInteractive bool) (walker.ServiceCandidate, error) {
 	selector = strings.TrimSpace(selector)
 	if selector == "" && strings.TrimSpace(savedSelector) != "" {
 		selector = savedSelector
@@ -376,15 +359,15 @@ func selectService(reader *bufio.Reader, services []walker.ServiceCandidate, sav
 		return findServiceSelection(services, selector)
 	}
 	if len(services) == 0 {
-		return serviceSelection{Name: "repository root", Root: "."}, nil
+		return walker.ServiceCandidate{Name: "repository root", Root: "."}, nil
 	}
 	if len(services) == 1 {
-		selected := selectionFromCandidate(services[0])
+		selected := services[0]
 		fmt.Printf("[✓] Native service: %s (%s)\n", selected.Name, selected.Root)
 		return selected, nil
 	}
 	if nonInteractive {
-		return serviceSelection{}, fmt.Errorf("multiple backend services found; use --service with a service name, root, or entry file")
+		return walker.ServiceCandidate{}, fmt.Errorf("multiple backend services found; use --service with a service name, root, or entry file")
 	}
 
 	fmt.Println("\nNative service selection:")
@@ -394,16 +377,16 @@ func selectService(reader *bufio.Reader, services []walker.ServiceCandidate, sav
 	}
 	value, err := readPrompt(reader, fmt.Sprintf("Select service [0-%d]: ", len(services)))
 	if err != nil {
-		return serviceSelection{}, err
+		return walker.ServiceCandidate{}, err
 	}
 	choice, err := strconv.Atoi(value)
 	if err != nil || choice < 0 || choice > len(services) {
-		return serviceSelection{}, fmt.Errorf("invalid service selection %q", value)
+		return walker.ServiceCandidate{}, fmt.Errorf("invalid service selection %q", value)
 	}
 	if choice == 0 {
-		return serviceSelection{Name: "repository root", Root: "."}, nil
+		return walker.ServiceCandidate{Name: "repository root", Root: "."}, nil
 	}
-	selected := selectionFromCandidate(services[choice-1])
+	selected := services[choice-1]
 	fmt.Printf("[✓] Native service: %s (%s)\n", selected.Name, selected.Root)
 	return selected, nil
 }
@@ -412,9 +395,9 @@ func serviceOption(index int, service walker.ServiceCandidate) string {
 	return fmt.Sprintf("  %d. %s (%s) — %s", index, service.Name, service.Runtime, service.Root)
 }
 
-func findServiceSelection(services []walker.ServiceCandidate, selector string) (serviceSelection, error) {
+func findServiceSelection(services []walker.ServiceCandidate, selector string) (walker.ServiceCandidate, error) {
 	if selector == "." || strings.EqualFold(selector, "root") {
-		return serviceSelection{Name: "repository root", Root: "."}, nil
+		return walker.ServiceCandidate{Name: "repository root", Root: "."}, nil
 	}
 	var matches []walker.ServiceCandidate
 	for _, service := range services {
@@ -423,21 +406,14 @@ func findServiceSelection(services []walker.ServiceCandidate, selector string) (
 		}
 	}
 	if len(matches) == 0 {
-		return serviceSelection{}, fmt.Errorf("service %q was not discovered", selector)
+		return walker.ServiceCandidate{}, fmt.Errorf("service %q was not discovered", selector)
 	}
 	if len(matches) > 1 {
-		return serviceSelection{}, fmt.Errorf("service name %q is ambiguous; use its root or entry file", selector)
+		return walker.ServiceCandidate{}, fmt.Errorf("service name %q is ambiguous; use its root or entry file", selector)
 	}
-	selected := selectionFromCandidate(matches[0])
+	selected := matches[0]
 	fmt.Printf("[✓] Native service: %s (%s)\n", selected.Name, selected.Root)
 	return selected, nil
-}
-
-func selectionFromCandidate(candidate walker.ServiceCandidate) serviceSelection {
-	return serviceSelection{
-		Name: candidate.Name, Root: candidate.Root, Entry: candidate.Entry,
-		Runtime: candidate.Runtime, StartCommand: candidate.StartCommand,
-	}
 }
 
 func selectRuntime(reader *bufio.Reader, report walker.Report, existing core.Project, mode, dockerfile, context string, port int, nonInteractive bool) (runtimeSelection, error) {
@@ -604,7 +580,7 @@ func findDockerfile(files []walker.DockerfileInfo, path string) (walker.Dockerfi
 }
 
 func installationRoot() (string, error) {
-	if cwd, err := os.Getwd(); err == nil && fileExists(filepath.Join(cwd, "yamls", "walk.yml")) {
+	if cwd, err := os.Getwd(); err == nil && core.FileExists(filepath.Join(cwd, "yamls", "walk.yml")) {
 		return cwd, nil
 	}
 	executable, err := os.Executable()
@@ -615,15 +591,10 @@ func installationRoot() (string, error) {
 		return "", err
 	}
 	root := filepath.Dir(executable)
-	if !fileExists(filepath.Join(root, "yamls", "walk.yml")) {
+	if !core.FileExists(filepath.Join(root, "yamls", "walk.yml")) {
 		return "", fmt.Errorf("cannot find yamls/walk.yml beside EZDeploy; run from its installation directory")
 	}
 	return root, nil
-}
-
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
 }
 
 func readPrompt(reader *bufio.Reader, label string) (string, error) {

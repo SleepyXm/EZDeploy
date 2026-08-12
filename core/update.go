@@ -94,7 +94,7 @@ func pullRedeploySystemd(projectName string, project Project) error {
 	}
 
 	fmt.Printf("[→] Restarting %s...\n", serviceName)
-	if err := run("systemctl", "restart", serviceName); err != nil {
+	if err := Run("", "systemctl", "restart", serviceName); err != nil {
 		restoreSystemdSnapshot(projectName, servicePath, rollback, serviceName)
 		return fmt.Errorf("systemctl restart %s: %w", serviceName, err)
 	}
@@ -118,12 +118,12 @@ func pullRedeploySystemd(projectName string, project Project) error {
 func waitForSystemdActive(serviceName string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if err := run("systemctl", "is-active", "--quiet", serviceName); err == nil {
+		if err := Run("", "systemctl", "is-active", "--quiet", serviceName); err == nil {
 			return nil
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	return run("systemctl", "is-active", "--quiet", serviceName)
+	return Run("", "systemctl", "is-active", "--quiet", serviceName)
 }
 
 // ── Rollback helpers ─────────────────────────────────────────────────────────
@@ -145,14 +145,14 @@ func restoreSystemdSnapshot(projectName, projectPath, snapshot, serviceName stri
 		return
 	}
 	fmt.Printf("[→] Restoring rollback snapshot for %s...\n", projectName)
-	_ = run("systemctl", "stop", serviceName)
+	_ = Run("", "systemctl", "stop", serviceName)
 	_ = os.RemoveAll(projectPath)
 	if err := copyDir(snapshot, projectPath); err != nil {
 		fmt.Printf("[!] Rollback copy failed: %v — manual intervention needed\n", err)
 		return
 	}
 	_ = os.RemoveAll(snapshot)
-	if err := run("systemctl", "start", serviceName); err != nil {
+	if err := Run("", "systemctl", "start", serviceName); err != nil {
 		fmt.Printf("[!] Rollback service start failed: %v — manual intervention needed\n", err)
 		return
 	}

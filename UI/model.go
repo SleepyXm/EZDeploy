@@ -29,7 +29,7 @@ type Model struct {
 	cursor  int
 	view    view
 
-	project *Project // active project context, set once CloneRepo succeeds
+	project string // project name selected from the deployment registry
 
 	// step-by-step input state
 	activeTool  *Tool

@@ -37,38 +37,38 @@ func DeployDocker(deployment DockerDeployment) error {
 
 	containerName, imageName := dockerNames(deployment.ProjectName)
 	fmt.Printf("[→] Building %s from %s...\n", imageName, deployment.Dockerfile)
-	if err := run("docker", "build", "--file", dockerfile, "--tag", imageName, contextPath); err != nil {
+	if err := Run("", "docker", "build", "--file", dockerfile, "--tag", imageName, contextPath); err != nil {
 		return fmt.Errorf("docker build: %w", err)
 	}
 
-	oldExists, err := dockerContainerExists(containerName)
+	oldExists, _, err := dockerContainerState(containerName)
 	if err != nil {
 		return err
 	}
 	backupName := containerName + "-previous"
 	if oldExists {
-		if backupExists, err := dockerContainerExists(backupName); err != nil {
+		if backupExists, _, err := dockerContainerState(backupName); err != nil {
 			return err
 		} else if backupExists {
-			if err := run("docker", "rm", "--force", backupName); err != nil {
+			if err := Run("", "docker", "rm", "--force", backupName); err != nil {
 				return fmt.Errorf("remove stale Docker rollback container: %w", err)
 			}
 		}
-		if err := run("docker", "stop", containerName); err != nil {
+		if err := Run("", "docker", "stop", containerName); err != nil {
 			return fmt.Errorf("stop current Docker container: %w", err)
 		}
-		if err := run("docker", "rename", containerName, backupName); err != nil {
-			_ = run("docker", "start", containerName)
+		if err := Run("", "docker", "rename", containerName, backupName); err != nil {
+			_ = Run("", "docker", "start", containerName)
 			return fmt.Errorf("prepare Docker rollback container: %w", err)
 		}
 	}
 
 	runArgs := dockerRunArgs(deployment, containerName, imageName)
-	if err := run("docker", runArgs...); err != nil {
+	if err := Run("", "docker", runArgs...); err != nil {
 		restoreDockerContainer(containerName, backupName, oldExists)
 		return fmt.Errorf("docker run: %w", err)
 	}
-	running, err := dockerContainerRunning(containerName)
+	_, running, err := dockerContainerState(containerName)
 	if err != nil || !running {
 		restoreDockerContainer(containerName, backupName, oldExists)
 		if err != nil {
@@ -77,7 +77,7 @@ func DeployDocker(deployment DockerDeployment) error {
 		return fmt.Errorf("Docker container %s stopped during startup", containerName)
 	}
 	if oldExists {
-		_ = run("docker", "rm", backupName)
+		_ = Run("", "docker", "rm", backupName)
 	}
 	fmt.Printf("[✓] Docker container %s is running on 127.0.0.1:%d\n", containerName, deployment.HostPort)
 	return nil
@@ -90,7 +90,7 @@ func dockerRunArgs(deployment DockerDeployment, containerName, imageName string)
 		"--label", "com.ezdeploy.project=" + deployment.ProjectName,
 		"--publish", fmt.Sprintf("127.0.0.1:%d:%d", deployment.HostPort, deployment.ContainerPort),
 	}
-	if envPath := filepath.Join(deployment.ProjectPath, ".env"); fileExists(envPath) {
+	if envPath := filepath.Join(deployment.ProjectPath, ".env"); FileExists(envPath) {
 		args = append(args, "--env-file", envPath)
 	}
 	// Explicit PORT wins even when the project's env file also defines it.
@@ -133,47 +133,35 @@ func projectFile(root, relative string, directory bool) (string, error) {
 }
 
 func dockerNames(projectName string) (string, string) {
-	slug := strings.ToLower(strings.ReplaceAll(projectName, "_", "-"))
-	return "ezdeploy-" + slug, "ezdeploy/" + slug + ":latest"
+	container := ManagedName(projectName)
+	return container, "ezdeploy/" + strings.TrimPrefix(container, "ezdeploy-") + ":latest"
 }
 
-func dockerContainerExists(name string) (bool, error) {
-	output, err := exec.Command("docker", "container", "inspect", name).CombinedOutput()
+// dockerContainerState is the single inspection path for existence and state.
+func dockerContainerState(name string) (bool, bool, error) {
+	output, err := exec.Command("docker", "container", "inspect", "--format", "{{.State.Running}}", name).CombinedOutput()
 	if err == nil {
-		return true, nil
+		return true, strings.TrimSpace(string(output)) == "true", nil
 	}
 	if strings.Contains(strings.ToLower(string(output)), "no such") {
-		return false, nil
+		return false, false, nil
 	}
-	return false, fmt.Errorf("inspect Docker container %s: %w: %s", name, err, strings.TrimSpace(string(output)))
-}
-
-func dockerContainerRunning(name string) (bool, error) {
-	output, err := exec.Command("docker", "container", "inspect", "--format", "{{.State.Running}}", name).CombinedOutput()
-	if err != nil {
-		return false, fmt.Errorf("inspect Docker container state: %w: %s", err, strings.TrimSpace(string(output)))
-	}
-	return strings.TrimSpace(string(output)) == "true", nil
+	return false, false, fmt.Errorf("inspect Docker container %s: %w: %s", name, err, strings.TrimSpace(string(output)))
 }
 
 func restoreDockerContainer(name, backup string, hadBackup bool) {
-	_ = run("docker", "rm", "--force", name)
+	_ = Run("", "docker", "rm", "--force", name)
 	if hadBackup {
-		_ = run("docker", "rename", backup, name)
-		_ = run("docker", "start", name)
+		_ = Run("", "docker", "rename", backup, name)
+		_ = Run("", "docker", "start", name)
 	}
 }
 
-func StopDocker(projectName string) error {
+// DockerAction controls the one container owned by a project.
+func DockerAction(projectName, action string) error {
 	name, _ := dockerNames(projectName)
-	exists, err := dockerContainerExists(name)
-	if err != nil || !exists {
-		return err
+	if action != "start" && action != "stop" {
+		return fmt.Errorf("unsupported Docker action %q", action)
 	}
-	return run("docker", "stop", name)
-}
-
-func StartDocker(projectName string) error {
-	name, _ := dockerNames(projectName)
-	return run("docker", "start", name)
+	return Run("", "docker", action, name)
 }

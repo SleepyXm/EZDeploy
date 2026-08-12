@@ -73,10 +73,6 @@ func (r Report) RouteHitsUnder(root string) []RouteHit {
 	return hits
 }
 
-func (r Report) UniqueRoutePathsUnder(root string) []string {
-	return uniqueRoutePaths(r.RouteHitsUnder(root))
-}
-
 // RouteHitsForService removes routes owned by nested detected services. This
 // matters when a repository-root frontend contains separate backend folders.
 func (r Report) RouteHitsForService(service ServiceCandidate) []RouteHit {

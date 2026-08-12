@@ -37,7 +37,7 @@ type Project struct {
 type Registry map[string]Project
 
 func loadRegistry() (Registry, error) {
-	if !fileExists(registryPath) {
+	if !FileExists(registryPath) {
 		return Registry{}, nil
 	}
 	data, err := os.ReadFile(registryPath)
@@ -153,10 +153,6 @@ func RegisterProject(projectName string, project Project) error {
 // GetRegistry returns the current registry state.
 func GetRegistry() (Registry, error) {
 	return loadRegistry()
-}
-
-func GetProjects() (Registry, error) {
-	return GetRegistry()
 }
 
 // UnregisterProject removes a project from the registry.
