@@ -75,8 +75,7 @@ func DownloadDeps(projectPath string) error {
 }
 
 func installPythonDeps(projectPath string) error {
-	fmt.Println("[→] Python service selected, installing dependencies...")
-	args := []string{"-m", "pip", "install", "--ignore-installed"}
+	args := []string{"-m", "pip", "install"}
 	if FileExists(filepath.Join(projectPath, "requirements.txt")) {
 		args = append(args, "-r", "requirements.txt")
 	} else if FileExists(filepath.Join(projectPath, "pyproject.toml")) {
@@ -85,10 +84,19 @@ func installPythonDeps(projectPath string) error {
 		fmt.Println("[!] No Python dependency manifest found. Skipping...")
 		return nil
 	}
-	if err := Run(projectPath, "python3", args...); err != nil {
+	python := filepath.Join(".venv", "bin", "python")
+	if !FileExists(filepath.Join(projectPath, python)) {
+		fmt.Println("[→] Creating Python virtual environment...")
+		if err := Run(projectPath, "python3", "-m", "venv", ".venv"); err != nil {
+			return fmt.Errorf("create Python virtual environment: %w", err)
+		}
+	}
+	// Re-reading the manifest on every deploy installs dependencies added by a pull while preserving this service's isolated environment.
+	fmt.Println("[→] Synchronizing Python dependencies in .venv...")
+	if err := Run(projectPath, python, args...); err != nil {
 		return fmt.Errorf("python dependency install: %w", err)
 	}
-	fmt.Println("[✓] Dependencies installed")
+	fmt.Println("[✓] Python virtual environment ready")
 	return nil
 }
 
@@ -152,7 +160,7 @@ func DefaultStartCommand(projectPath string) (string, error) {
 		}
 	}
 	if data, err := os.ReadFile(filepath.Join(projectPath, "main.py")); err == nil && strings.Contains(string(data), "FastAPI(") {
-		return `python3 -m uvicorn main:app --host 127.0.0.1 --port "$PORT"`, nil
+		return `.venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port "$PORT"`, nil
 	}
 	return "", nil
 }

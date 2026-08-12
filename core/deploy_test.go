@@ -272,7 +272,7 @@ app.listen(process.env.PORT)`,
 	want := map[string]struct {
 		name, root, entry, start string
 	}{
-		"python": {"users", "services/users", "services/users/main.py", `python3 -m uvicorn main:app --host 127.0.0.1 --port "$PORT"`},
+		"python": {"users", "services/users", "services/users/main.py", `.venv/bin/python -m uvicorn main:app --host 127.0.0.1 --port "$PORT"`},
 		"go":     {"api", "services/payments", "services/payments/cmd/api/main.go", "go run ./cmd/api"},
 		"node":   {"finsec", ".", "app/ui/index.ts", "npm start"},
 	}
