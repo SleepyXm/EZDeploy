@@ -23,9 +23,11 @@ Projects are stored under `/opt/ezdeploy/projects/<project-name>`. EZDeploy does
 
 ```bash
 sudo /opt/ezdeploy/ezdeploy deploy https://github.com/example/backend
+# or deploy several repositories as one rollback batch
+sudo /opt/ezdeploy/ezdeploy deploy https://github.com/example/api https://github.com/example/worker
 ```
 
-The deploy command clones or fast-forwards the repository, scans it, selects a runtime, prepares dependencies and environment values, starts the application, configures Nginx, provisions HTTPS, and saves the result in `registry.json`.
+The deploy command clones or fast-forwards each repository, scans it, selects a runtime, prepares dependencies and environment values, starts the application, configures Nginx, provisions HTTPS, and saves the result in `registry.json`. If any repository in a batch fails, earlier repositories are restored to their previous Git revisions, units, Nginx configuration, and registry records.
 
 | Option | Purpose |
 | --- | --- |
@@ -35,7 +37,7 @@ The deploy command clones or fast-forwards the repository, scans it, selects a r
 | `--email <address>` | Set the Let's Encrypt email. |
 | `--port <number>` | Override the host application port. |
 | `--start <command>` | Set a native start command. |
-| `--service <name\|path>` | Select a detected native service by name, root, or entry file. |
+| `--service <name\|path,...>` | Select one or more detected native services by name, root, or entry file. |
 | `--runtime <native\|docker>` | Select native systemd or Docker execution. |
 | `--dockerfile <path>` | Select the production Dockerfile. |
 | `--docker-context <path>` | Set its repository-relative build context. |
@@ -86,15 +88,17 @@ Git updates use `merge --ff-only`; server divergence is rejected rather than ove
 
 Route and Dockerfile rules extend the existing `yamls/walk.yml`. Common literal Go, Express, FastAPI, and Flask routes become Nginx locations; unknown paths return `404`. Dynamic or cross-file routes can be supplied with `--allow-route`, which must be repeated on later deployments.
 
-The same walker lists Python, Go, and Node backend candidates in mixed-language repositories. Each candidate includes its service root, entry file, likely start command, confidence, and the filename, manifest, and server markers that produced the match. Native deployment selects one candidate, then limits dependency installation, environment discovery, routes, and the systemd working directory to that service. Automated deployment with multiple candidates must provide `--service`.
+The same walker lists Python, Go, and Node backend candidates in mixed-language repositories. Each candidate includes its service root, entry file, likely start command, confidence, and the filename, manifest, and server markers that produced the match. Interactive selection accepts comma-separated indexes such as `2,3`; `--service app/backend,go-backend` provides the non-interactive equivalent. Every selected service receives its own port, systemd unit, registry service record, working directory, dependency preparation, and Nginx route targets. A failure restores the repository as one release rather than leaving half of a monorepo running the new revision.
 
 Existing `.env` values are preserved at mode `0600`. Native applications run as `SUDO_USER`, not root. Go applications rebuild on update; conventional commands are detected for Go, `npm start`, and FastAPI `main:app`.
 
 ## Current boundaries
 
 - Nginx + Certbot is the implemented ingress; Traefik and cloud ingress are later providers.
-- There is no custom HTTP deployment API, application health check, or complete deployment rollback yet.
-- Route discovery is literal. A repository can currently register one selected native service; deploying several services from the same repository as independently managed applications is not implemented yet.
+- There is no custom HTTP deployment API or application-level HTTP health check. Startup checks currently verify the systemd unit or Docker container state.
+- Rollback restores Git revisions and EZDeploy-managed units, Nginx files, containers, and registry records; it does not restore external databases or other application state.
+- Route discovery is literal. Multi-service unrestricted proxying is intentionally rejected because one catch-all Nginx location cannot choose between several service ports.
+- The terminal metrics view is local; a managed observability provider has not been selected or integrated.
 - Installation and binary upgrades are not packaged; keep the binary and `yamls` together.
 - Builds execute trusted repository content. Do not deploy an untrusted repository as an administrator.
 

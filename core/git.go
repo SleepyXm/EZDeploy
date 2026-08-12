@@ -12,12 +12,28 @@ import (
 
 const CloneDir = "./projects"
 
-var projectNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+var (
+	projectNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+	serviceNamePattern = regexp.MustCompile(`[^a-z0-9.-]+`)
+)
 
 // ManagedName is the canonical systemd and Docker container name.
 func ManagedName(projectName string) string {
 	name := strings.NewReplacer("_", "-", " ", "-").Replace(strings.ToLower(projectName))
 	return "ezdeploy-" + name
+}
+
+// ManagedServiceName gives each process in a monorepo a stable system identity.
+func ManagedServiceName(projectName, serviceName string, multiple bool) string {
+	if !multiple {
+		return ManagedName(projectName)
+	}
+	serviceName = serviceNamePattern.ReplaceAllString(strings.ToLower(serviceName), "-")
+	serviceName = strings.Trim(serviceName, "-")
+	if serviceName == "" {
+		serviceName = "service"
+	}
+	return ManagedName(projectName + "-" + serviceName)
 }
 
 type CloneOptions struct {
@@ -125,6 +141,15 @@ func CurrentBranch(projectPath string) (string, error) {
 		return "", fmt.Errorf("repository has no active branch")
 	}
 	return branch, nil
+}
+
+// CurrentRevision identifies the repository release stored in the registry.
+func CurrentRevision(projectPath string) (string, error) {
+	revision, err := gitOutput(projectPath, "rev-parse", "HEAD")
+	if err != nil || revision == "" {
+		return "", fmt.Errorf("repository has no current revision")
+	}
+	return revision, nil
 }
 
 func validateSSHKey(path string) (string, error) {

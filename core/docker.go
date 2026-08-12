@@ -160,7 +160,7 @@ func restoreDockerContainer(name, backup string, hadBackup bool) {
 // DockerAction controls the one container owned by a project.
 func DockerAction(projectName, action string) error {
 	name, _ := dockerNames(projectName)
-	if action != "start" && action != "stop" {
+	if action != "start" && action != "stop" && action != "restart" {
 		return fmt.Errorf("unsupported Docker action %q", action)
 	}
 	return Run("", "docker", action, name)

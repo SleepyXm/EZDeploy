@@ -7,29 +7,26 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"EZDeploy/core"
 )
 
-const systemdDir = "/etc/systemd/system"
-
-// Create writes and enables the unit; deployment owns the registry update.
-func Create(projectName, projectPath, startCommand string, port int) (string, error) {
-	if projectName == "" {
-		return "", fmt.Errorf("projectName is required")
-	}
-	if projectPath == "" {
-		return "", fmt.Errorf("projectPath is required")
-	}
-	if startCommand == "" {
-		return "", fmt.Errorf("startCommand is required")
-	}
-	if port == 0 {
-		return "", fmt.Errorf("port is required")
+// writeUnit creates one unit file; activation reloads systemd once for the batch.
+func writeUnit(unitName, description, projectPath, startCommand string, port int) error {
+	switch {
+	case unitName == "":
+		return fmt.Errorf("unitName is required")
+	case projectPath == "":
+		return fmt.Errorf("projectPath is required")
+	case startCommand == "":
+		return fmt.Errorf("startCommand is required")
+	case port == 0:
+		return fmt.Errorf("port is required")
 	}
 	serviceUser, uid, gid, err := deploymentUser()
 	if err != nil {
-		return "", err
+		return err
 	}
 	// The application runs as the sudo caller, so its managed project must be writable by that account.
 	if err := filepath.WalkDir(projectPath, func(path string, _ os.DirEntry, walkErr error) error {
@@ -38,30 +35,18 @@ func Create(projectName, projectPath, startCommand string, port int) (string, er
 		}
 		return os.Lchown(path, uid, gid)
 	}); err != nil {
-		return "", fmt.Errorf("set project ownership: %w", err)
+		return fmt.Errorf("set project ownership: %w", err)
 	}
 
-	name := core.ManagedName(projectName)
-	unitPath := filepath.Join(systemdDir, name+".service")
-
-	unit := renderUnit(projectName, projectPath, startCommand, port, serviceUser)
+	unitPath := filepath.Join(core.SystemdDir, unitName+".service")
+	unit := renderUnit(description, projectPath, startCommand, port, serviceUser)
 
 	if err := os.WriteFile(unitPath, []byte(unit), 0o644); err != nil {
-		return "", fmt.Errorf("write systemd unit: %w", err)
+		return fmt.Errorf("write systemd unit: %w", err)
 	}
 
-	if err := core.Run("", "systemctl", "daemon-reload"); err != nil {
-		return "", fmt.Errorf("systemctl daemon-reload: %w", err)
-	}
-
-	if err := core.Run("", "systemctl", "enable", name); err != nil {
-		return "", fmt.Errorf("systemctl enable %s: %w", name, err)
-	}
-
-	fmt.Printf("[✓] Service created: %s\n", name)
-	return name, nil
+	return nil
 }
-
 func renderUnit(projectName, projectPath, startCommand string, port int, serviceUser string) string {
 	envPath := filepath.Join(projectPath, ".env")
 	// Percent signs are systemd specifiers; doubling preserves the user's command.
@@ -110,35 +95,116 @@ func Action(projectName, actionName string) error {
 	if !ok {
 		return fmt.Errorf("unsupported service action %q", actionName)
 	}
-	name, err := registeredName(projectName)
+	reg, err := core.GetRegistry()
 	if err != nil {
 		return err
 	}
-
-	if err := core.Run("", "systemctl", actionName, name); err != nil {
-		return fmt.Errorf("systemctl %s %s: %w", actionName, name, err)
+	project, ok := reg[projectName]
+	if !ok {
+		return fmt.Errorf("%s not found in registry", projectName)
 	}
-
-	return core.RegisterProject(projectName, core.Project{
-		ServiceName: name,
-		Status:      status,
-	})
+	managed := project.ManagedServices(projectName)
+	if len(managed) == 0 {
+		return fmt.Errorf("%s has no systemd services", projectName)
+	}
+	if project.Runtime == "docker" {
+		if actionName == "reload" {
+			return fmt.Errorf("Docker services do not support reload")
+		}
+		if err := core.DockerAction(projectName, actionName); err != nil {
+			return err
+		}
+		managed[0].Status = status
+		return core.RegisterProject(projectName, core.Project{Services: managed, Status: status})
+	}
+	if err := control(managed, actionName); err != nil {
+		return err
+	}
+	for i := range managed {
+		managed[i].Status = status
+	}
+	return core.RegisterProject(projectName, core.Project{Services: managed, Status: status})
 }
 
-func registeredName(projectName string) (string, error) {
-	reg, err := core.GetRegistry()
-	if err != nil {
-		return "", err
+// ActivateProject is the only Docker/systemd switch used by a fresh deployment.
+func ActivateProject(projectName, projectPath string, previous core.Project, docker *core.DockerDeployment, native []core.Service, rollback *core.DeploymentRollback) error {
+	if docker != nil {
+		old := previous.ManagedServices(projectName)
+		if previous.Runtime != "docker" {
+			if err := control(old, "stop"); err != nil {
+				return err
+			}
+		}
+		if err := core.DeployDocker(*docker); err != nil {
+			return err
+		}
+		rollback.TrackDocker()
+		for _, service := range old {
+			if service.Unit != "" {
+				if err := removeUnit(service.Unit); err != nil {
+					return err
+				}
+			}
+		}
+		if previous.Runtime != "docker" && len(old) > 0 {
+			return core.Run("", "systemctl", "daemon-reload")
+		}
+		return nil
 	}
-
-	p, ok := reg[projectName]
-	if !ok {
-		return "", fmt.Errorf("%s not found in registry", projectName)
+	if previous.Runtime == "docker" {
+		if err := core.DockerAction(projectName, "stop"); err != nil {
+			return err
+		}
 	}
-
-	if p.ServiceName != "" {
-		return p.ServiceName, nil
+	wanted := map[string]bool{}
+	for _, service := range native {
+		wanted[service.Unit] = true
+		if err := rollback.TrackUnit(service.Unit); err != nil {
+			return err
+		}
+		path := filepath.Join(projectPath, filepath.FromSlash(service.Root))
+		if err := writeUnit(service.Unit, projectName+" / "+service.Name, path, service.StartCommand, service.Port); err != nil {
+			return err
+		}
 	}
-
-	return core.ManagedName(projectName), nil
+	for _, service := range previous.ManagedServices(projectName) {
+		if service.Unit != "" && !wanted[service.Unit] {
+			if err := removeUnit(service.Unit); err != nil {
+				return err
+			}
+		}
+	}
+	if err := core.Run("", "systemctl", "daemon-reload"); err != nil {
+		return err
+	}
+	for _, service := range native {
+		if err := core.Run("", "systemctl", "enable", service.Unit); err != nil {
+			return err
+		}
+		if err := core.Run("", "systemctl", "restart", service.Unit); err != nil {
+			return err
+		}
+		if err := core.WaitForSystemdActive(service.Unit, 5*time.Second); err != nil {
+			return fmt.Errorf("service %s failed to start: %w", service.Name, err)
+		}
+	}
+	return nil
+}
+func control(managed []core.Service, actionName string) error {
+	for _, service := range managed {
+		if service.Unit == "" {
+			return fmt.Errorf("service %s is not managed by systemd", service.Name)
+		}
+		if err := core.Run("", "systemctl", actionName, service.Unit); err != nil {
+			return fmt.Errorf("systemctl %s %s: %w", actionName, service.Unit, err)
+		}
+	}
+	return nil
+}
+func removeUnit(unitName string) error {
+	_ = core.Run("", "systemctl", "disable", "--now", unitName)
+	if err := os.Remove(filepath.Join(core.SystemdDir, unitName+".service")); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }

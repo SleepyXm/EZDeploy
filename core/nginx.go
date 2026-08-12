@@ -17,6 +17,12 @@ const (
 
 var serverNamePattern = regexp.MustCompile(`^[A-Za-z0-9.-]+$`)
 
+// RouteTarget binds one discovered route to the service port that owns it.
+type RouteTarget struct {
+	Path string
+	Port int
+}
+
 // proxyBlock keeps the existing streaming-compatible proxy settings in one place.
 func proxyBlock(location string, port int, streaming bool) string {
 	block := fmt.Sprintf(`    %s {
@@ -81,13 +87,13 @@ func joinRoutePath(prefix, path string) string {
 
 // CreateNginxConfig writes, validates, and enables a project server block.
 // whitelist=false preserves the old unrestricted proxy behavior explicitly.
-func CreateNginxConfig(projectName string, port int, domain, email string, routes []string, whitelist bool) error {
+func CreateNginxConfig(projectName, domain, email string, targets []RouteTarget, whitelist bool) error {
 	if !projectNamePattern.MatchString(projectName) || len(projectName) > 100 {
 		return fmt.Errorf("invalid project name %q", projectName)
 	}
 	configPath := filepath.Join(nginxSitesAvailable, projectName)
 	symlinkPath := filepath.Join(nginxSitesEnabled, projectName)
-	config, domainPart, err := renderNginxConfig(port, domain, routes, whitelist)
+	config, domainPart, err := renderNginxConfig(domain, targets, whitelist)
 	if err != nil {
 		return err
 	}
@@ -126,10 +132,7 @@ func CreateNginxConfig(projectName string, port int, domain, email string, route
 	return setupSSL(domainPart, email)
 }
 
-func renderNginxConfig(port int, domain string, routes []string, whitelist bool) (string, string, error) {
-	if port < 1 || port > 65535 {
-		return "", "", fmt.Errorf("invalid port %d", port)
-	}
+func renderNginxConfig(domain string, targets []RouteTarget, whitelist bool) (string, string, error) {
 	domain = strings.TrimSpace(domain)
 	domainPart, basePath := domain, "/"
 	if idx := strings.IndexByte(domain, '/'); idx != -1 {
@@ -144,14 +147,20 @@ func renderNginxConfig(port int, domain string, routes []string, whitelist bool)
 
 	var appLocations string
 	if whitelist {
-		seen := map[string]bool{}
-		for _, route := range routes {
-			path := joinRoutePath(basePath, route)
+		seen := map[string]int{}
+		for _, target := range targets {
+			if target.Port < 1 || target.Port > 65535 {
+				return "", "", fmt.Errorf("invalid port %d", target.Port)
+			}
+			path := joinRoutePath(basePath, target.Path)
 			// EZDeploy owns this exact path for its webhook listener.
 			if path == "/gh-webhook" {
 				return "", "", fmt.Errorf("route /gh-webhook is reserved by EZDeploy")
 			}
-			seen[path] = true
+			if port, exists := seen[path]; exists && port != target.Port {
+				return "", "", fmt.Errorf("route %s belongs to multiple services", path)
+			}
+			seen[path] = target.Port
 		}
 		if len(seen) == 0 {
 			return "", "", fmt.Errorf("no routes discovered; add routes manually or disable whitelisting")
@@ -169,11 +178,23 @@ func renderNginxConfig(port int, domain string, routes []string, whitelist bool)
 			if err != nil {
 				return "", "", err
 			}
-			blocks = append(blocks, proxyBlock(location, port, true))
+			blocks = append(blocks, proxyBlock(location, seen[path], true))
 		}
 		appLocations = strings.Join(blocks, "\n") + "\n    location / {\n        return 404;\n    }"
 	} else {
-		appLocations = proxyBlock("location "+normalizeRoutePath(basePath), port, true)
+		ports := map[int]bool{}
+		for _, target := range targets {
+			ports[target.Port] = true
+		}
+		if len(ports) != 1 {
+			return "", "", fmt.Errorf("unrestricted proxying requires exactly one service port")
+		}
+		for port := range ports {
+			if port < 1 || port > 65535 {
+				return "", "", fmt.Errorf("invalid port %d", port)
+			}
+			appLocations = proxyBlock("location "+normalizeRoutePath(basePath), port, true)
+		}
 	}
 
 	config := fmt.Sprintf(`server {

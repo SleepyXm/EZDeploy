@@ -13,24 +13,61 @@ const (
 
 // Project holds the metadata for a deployed project.
 type Project struct {
-	Path           string `json:"path"`
-	Port           int    `json:"port"`
-	Domain         string `json:"domain"`
-	Email          string `json:"email,omitempty"`
-	RepoURL        string `json:"repo_url"`
-	Branch         string `json:"branch"`
-	Status         string `json:"status"`
-	ServiceName    string `json:"service_name"`
-	StartCommand   string `json:"start_command"`
-	Runtime        string `json:"runtime,omitempty"`
-	Dockerfile     string `json:"dockerfile,omitempty"`
-	DockerContext  string `json:"docker_context,omitempty"`
-	ContainerPort  int    `json:"container_port,omitempty"`
-	ServiceRoot    string `json:"service_root,omitempty"`
-	ServiceEntry   string `json:"service_entry,omitempty"`
-	ServiceRuntime string `json:"service_runtime,omitempty"`
-	SigningKey     string `json:"signing_key,omitempty"` // Ed25519 private key seed (base64) — never logged
-	SSHKey         string `json:"ssh_key,omitempty"`     // path to SSH private key for private repos
+	Path           string    `json:"path"`
+	Port           int       `json:"port"`
+	Domain         string    `json:"domain"`
+	Email          string    `json:"email,omitempty"`
+	RepoURL        string    `json:"repo_url"`
+	Branch         string    `json:"branch"`
+	Status         string    `json:"status"`
+	ServiceName    string    `json:"service_name"`
+	StartCommand   string    `json:"start_command"`
+	Runtime        string    `json:"runtime,omitempty"`
+	Dockerfile     string    `json:"dockerfile,omitempty"`
+	DockerContext  string    `json:"docker_context,omitempty"`
+	ContainerPort  int       `json:"container_port,omitempty"`
+	ServiceRoot    string    `json:"service_root,omitempty"`
+	ServiceEntry   string    `json:"service_entry,omitempty"`
+	ServiceRuntime string    `json:"service_runtime,omitempty"`
+	Revision       string    `json:"revision,omitempty"`
+	Services       []Service `json:"services,omitempty"`
+	SigningKey     string    `json:"signing_key,omitempty"` // Ed25519 private key seed (base64) — never logged
+	SSHKey         string    `json:"ssh_key,omitempty"`     // path to SSH private key for private repos
+}
+
+// Service is one independently managed process inside a repository project.
+type Service struct {
+	Name         string   `json:"name"`
+	Root         string   `json:"root"`
+	Entry        string   `json:"entry,omitempty"`
+	Runtime      string   `json:"runtime"`
+	StartCommand string   `json:"start_command,omitempty"`
+	Unit         string   `json:"unit,omitempty"`
+	Port         int      `json:"port"`
+	Routes       []string `json:"routes,omitempty"`
+	Status       string   `json:"status,omitempty"`
+}
+
+// ManagedServices reads new multi-service records and migrates legacy projects in memory.
+func (p Project) ManagedServices(projectName string) []Service {
+	if len(p.Services) > 0 {
+		return append([]Service(nil), p.Services...)
+	}
+	if p.Runtime == "docker" {
+		return []Service{{Name: projectName, Root: ".", Runtime: "docker", Port: p.Port, Status: p.Status}}
+	}
+	if p.ServiceName == "" && p.ServiceRoot == "" && p.ServiceEntry == "" {
+		return nil
+	}
+	unit := p.ServiceName
+	if unit == "" {
+		unit = ManagedName(projectName)
+	}
+	return []Service{{
+		Name: projectName, Root: p.ServiceRoot, Entry: p.ServiceEntry,
+		Runtime: p.ServiceRuntime, StartCommand: p.StartCommand,
+		Unit: unit, Port: p.Port, Status: p.Status,
+	}}
 }
 
 // Registry maps project names to their metadata.
@@ -62,21 +99,26 @@ func saveRegistry(reg Registry) error {
 	return nil
 }
 
-// GetNextPort returns the lowest available port >= startingPort.
-func GetNextPort() (int, error) {
+// GetNextPorts reserves no state; it returns the lowest currently unused ports.
+func GetNextPorts(count int) ([]int, error) {
 	reg, err := loadRegistry()
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	used := make(map[int]bool, len(reg))
-	for _, p := range reg {
+	used := map[int]bool{}
+	for name, p := range reg {
 		used[p.Port] = true
+		for _, service := range p.ManagedServices(name) {
+			used[service.Port] = true
+		}
 	}
-	port := startingPort
-	for used[port] {
-		port++
+	ports := make([]int, 0, count)
+	for port := startingPort; len(ports) < count; port++ {
+		if !used[port] {
+			ports = append(ports, port)
+		}
 	}
-	return port, nil
+	return ports, nil
 }
 
 // RegisterProject adds or updates a project entry in the registry.
@@ -95,11 +137,11 @@ func RegisterProject(projectName string, project Project) error {
 	if project.Port != 0 {
 		existing.Port = project.Port
 	} else if existing.Port == 0 {
-		port, err := GetNextPort()
+		ports, err := GetNextPorts(1)
 		if err != nil {
 			return err
 		}
-		existing.Port = port
+		existing.Port = ports[0]
 	}
 
 	if project.Domain != "" {
@@ -135,6 +177,20 @@ func RegisterProject(projectName string, project Project) error {
 			existing.StartCommand = project.StartCommand
 		}
 	}
+	if project.Revision != "" {
+		existing.Revision = project.Revision
+	}
+	if project.Services != nil {
+		existing.Services = append([]Service(nil), project.Services...)
+		if len(existing.Services) == 1 {
+			service := existing.Services[0]
+			existing.Port, existing.ServiceName, existing.StartCommand = service.Port, service.Unit, service.StartCommand
+			existing.ServiceRoot, existing.ServiceEntry, existing.ServiceRuntime = service.Root, service.Entry, service.Runtime
+		} else {
+			existing.ServiceName, existing.StartCommand = "", ""
+			existing.ServiceRoot, existing.ServiceEntry, existing.ServiceRuntime = "", "", ""
+		}
+	}
 
 	if project.Status != "" {
 		existing.Status = project.Status
@@ -146,7 +202,7 @@ func RegisterProject(projectName string, project Project) error {
 		return err
 	}
 
-	fmt.Printf("[✓] Registered %s on port %d\n", projectName, existing.Port)
+	fmt.Printf("[✓] Registered %s with %d service(s)\n", projectName, len(existing.ManagedServices(projectName)))
 	return nil
 }
 

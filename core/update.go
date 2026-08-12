@@ -1,8 +1,8 @@
 package core
 
 import (
+	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -28,6 +28,13 @@ func PullAndRedeploy(projectName string) error {
 	}
 
 	fmt.Printf("[→] Updating %s (branch: %s)...\n", projectName, project.Branch)
+	rollback, err := BeginDeploymentRollback(projectName, project.Path)
+	if err != nil {
+		return err
+	}
+	fail := func(deployErr error) error {
+		return errors.Join(deployErr, rollback.Restore())
+	}
 
 	// ── 1. Git pull ──────────────────────────────────────────────────────────
 	// Re-use the SSH key stored at deploy time so private repos keep working.
@@ -36,18 +43,28 @@ func PullAndRedeploy(projectName string) error {
 		SSHKey: project.SSHKey, // empty string = public repo, falls back to HTTPS
 	}
 	if _, err := CloneRepoWithOptions(project.RepoURL, opts); err != nil {
-		return fmt.Errorf("git pull: %w", err)
+		return fail(fmt.Errorf("git pull: %w", err))
 	}
 	fmt.Printf("[✓] Pulled latest %s\n", project.Branch)
 
 	// ── 2. Redeploy by runtime ───────────────────────────────────────────────
 	switch project.Runtime {
 	case "docker":
-		return pullRedeployDocker(projectName, project)
+		err = pullRedeployDocker(projectName, project)
 	default:
-		// systemd-managed process (go, python, node, rust, …)
-		return pullRedeploySystemd(projectName, project)
+		err = pullRedeploySystemd(projectName, project)
 	}
+	if err != nil {
+		return fail(err)
+	}
+	if project.Revision, err = CurrentRevision(project.Path); err != nil {
+		return fail(err)
+	}
+	project.Status = "deployed"
+	if err := RegisterProject(projectName, project); err != nil {
+		return fail(err)
+	}
+	return nil
 }
 
 // ── Docker update ────────────────────────────────────────────────────────────
@@ -68,54 +85,37 @@ func pullRedeployDocker(projectName string, project Project) error {
 // ── Systemd update ───────────────────────────────────────────────────────────
 
 func pullRedeploySystemd(projectName string, project Project) error {
-	serviceName := project.ServiceName
-	if serviceName == "" {
-		serviceName = "ezdeploy-" + projectName
+	services := project.ManagedServices(projectName)
+	if len(services) == 0 {
+		return fmt.Errorf("project %s has no registered services", projectName)
 	}
-	servicePath := project.Path
-	if project.ServiceRoot != "" && project.ServiceRoot != "." {
-		servicePath = filepath.Join(project.Path, filepath.FromSlash(project.ServiceRoot))
-	}
-
-	// Snapshot before touching the running service so we have something to
-	// restore if the new code crashes on startup.
-	rollback, err := snapshotForRollback(servicePath, projectName)
-	if err != nil {
-		// Non-fatal: warn and proceed without a rollback safety net.
-		fmt.Printf("[!] Rollback snapshot skipped: %v\n", err)
-		rollback = ""
-	}
-	if project.ServiceRuntime != "" {
-		entry := strings.TrimPrefix(project.ServiceEntry, strings.TrimSuffix(project.ServiceRoot, "/")+"/")
-		if _, err := PrepareNativeService(servicePath, project.ServiceRuntime, entry); err != nil {
-			restoreSystemdSnapshot(projectName, servicePath, rollback, serviceName)
-			return fmt.Errorf("prepare updated service: %w", err)
+	for _, service := range services {
+		servicePath := filepath.Join(project.Path, filepath.FromSlash(service.Root))
+		if service.Runtime != "" {
+			entry := strings.TrimPrefix(service.Entry, strings.TrimSuffix(service.Root, "/")+"/")
+			if _, err := PrepareNativeService(servicePath, service.Runtime, entry); err != nil {
+				return fmt.Errorf("prepare %s: %w", service.Name, err)
+			}
 		}
 	}
-
-	fmt.Printf("[→] Restarting %s...\n", serviceName)
-	if err := Run("", "systemctl", "restart", serviceName); err != nil {
-		restoreSystemdSnapshot(projectName, servicePath, rollback, serviceName)
-		return fmt.Errorf("systemctl restart %s: %w", serviceName, err)
+	for _, service := range services {
+		fmt.Printf("[→] Restarting %s...\n", service.Unit)
+		if err := Run("", "systemctl", "restart", service.Unit); err != nil {
+			return fmt.Errorf("systemctl restart %s: %w", service.Unit, err)
+		}
 	}
-
-	// Poll for up to 5 seconds — enough for most apps to either bind their
-	// port or crash with a config error.
-	if err := waitForSystemdActive(serviceName, 5*time.Second); err != nil {
-		restoreSystemdSnapshot(projectName, servicePath, rollback, serviceName)
-		return fmt.Errorf("service %s failed to start after update: %w", serviceName, err)
-	}
-
-	if rollback != "" {
-		_ = os.RemoveAll(rollback)
+	for _, service := range services {
+		if err := WaitForSystemdActive(service.Unit, 5*time.Second); err != nil {
+			return fmt.Errorf("service %s failed to start after update: %w", service.Name, err)
+		}
 	}
 	fmt.Printf("[✓] %s updated and running\n", projectName)
 	return nil
 }
 
-// waitForSystemdActive polls `systemctl is-active` until the service is
+// WaitForSystemdActive polls `systemctl is-active` until the service is
 // active or the deadline passes.
-func waitForSystemdActive(serviceName string, timeout time.Duration) error {
+func WaitForSystemdActive(serviceName string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if err := Run("", "systemctl", "is-active", "--quiet", serviceName); err == nil {
@@ -124,62 +124,4 @@ func waitForSystemdActive(serviceName string, timeout time.Duration) error {
 		time.Sleep(500 * time.Millisecond)
 	}
 	return Run("", "systemctl", "is-active", "--quiet", serviceName)
-}
-
-// ── Rollback helpers ─────────────────────────────────────────────────────────
-
-func snapshotForRollback(projectPath, projectName string) (string, error) {
-	dest := filepath.Join(
-		filepath.Dir(projectPath),
-		fmt.Sprintf(".%s-rollback-%d", projectName, time.Now().Unix()),
-	)
-	if err := copyDir(projectPath, dest); err != nil {
-		return "", fmt.Errorf("snapshot %s → %s: %w", projectPath, dest, err)
-	}
-	return dest, nil
-}
-
-func restoreSystemdSnapshot(projectName, projectPath, snapshot, serviceName string) {
-	if snapshot == "" {
-		fmt.Printf("[!] No rollback snapshot available for %s\n", projectName)
-		return
-	}
-	fmt.Printf("[→] Restoring rollback snapshot for %s...\n", projectName)
-	_ = Run("", "systemctl", "stop", serviceName)
-	_ = os.RemoveAll(projectPath)
-	if err := copyDir(snapshot, projectPath); err != nil {
-		fmt.Printf("[!] Rollback copy failed: %v — manual intervention needed\n", err)
-		return
-	}
-	_ = os.RemoveAll(snapshot)
-	if err := Run("", "systemctl", "start", serviceName); err != nil {
-		fmt.Printf("[!] Rollback service start failed: %v — manual intervention needed\n", err)
-		return
-	}
-	fmt.Printf("[✓] Rolled back %s to previous version\n", projectName)
-}
-
-func copyDir(src, dst string) error {
-	return filepath.WalkDir(src, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(dst, rel)
-		if d.IsDir() {
-			return os.MkdirAll(target, 0o755)
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		return os.WriteFile(target, data, info.Mode())
-	})
 }
