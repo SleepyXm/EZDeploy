@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // getPackageManager returns the system package manager based on the detected OS.
@@ -26,6 +28,90 @@ func Run(dir, name string, args ...string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+const minimumHeavyMemory = 512 << 20
+
+// runHeavy guards memory-intensive installs/builds and reports elapsed time while they run.
+func runHeavy(dir, label, name string, args ...string) error {
+	if available := availableMemory(); available > 0 && available < minimumHeavyMemory {
+		return fmt.Errorf("%s requires at least %d MiB of available memory or swap; only %d MiB is available (free memory, enable swap, or resize the instance)", label, minimumHeavyMemory>>20, available>>20)
+	}
+	cmd, stopProgress := exec.Command(name, args...), startProgress(label)
+	cmd.Dir = dir
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	defer stopProgress()
+	if err := cmd.Run(); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "signal: killed") {
+			return fmt.Errorf("%s was killed by the operating system; memory exhaustion is likely: %w", label, err)
+		}
+		return err
+	}
+	return nil
+}
+
+func availableMemory() int64 {
+	data, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 0
+	}
+	available := parseAvailableMemory(string(data))
+	limit, limitOK := readMemoryNumber("/sys/fs/cgroup/memory.max")
+	current, currentOK := readMemoryNumber("/sys/fs/cgroup/memory.current")
+	if limitOK && currentOK && limit > current && (available == 0 || limit-current < available) {
+		available = limit - current
+	}
+	return available
+}
+
+func parseAvailableMemory(data string) int64 {
+	var available int64
+	for _, line := range strings.Split(data, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || (fields[0] != "MemAvailable:" && fields[0] != "SwapFree:") {
+			continue
+		}
+		if value, err := strconv.ParseInt(fields[1], 10, 64); err == nil {
+			available += value << 10
+		}
+	}
+	return available
+}
+
+func readMemoryNumber(path string) (int64, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, false
+	}
+	value, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+	return value, err == nil
+}
+
+func startProgress(label string) func() {
+	info, err := os.Stderr.Stat()
+	if err != nil || info.Mode()&os.ModeCharDevice == 0 {
+		return func() {}
+	}
+	done, stopped, started := make(chan struct{}), make(chan struct{}), time.Now()
+	go func() {
+		defer close(stopped)
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		frames, frame := []string{"\u280b", "\u2839", "\u283c", "\u2826"}, 0
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				fmt.Fprintf(os.Stderr, "[%s] %s (%s elapsed)\n", frames[frame%len(frames)], label, time.Since(started).Round(time.Second))
+				frame++
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		<-stopped
+	}
 }
 
 // EnsureTools installs only when a deploy needs a command that is not present.
@@ -90,9 +176,10 @@ func Install(items []string, defaultProxy bool) error {
 		if !set[runtime] {
 			continue
 		}
-		fmt.Printf("[→] Installing %s...\n", strings.ToUpper(runtime[:1])+runtime[1:])
+		label := "Installing " + strings.ToUpper(runtime[:1]) + runtime[1:]
+		fmt.Printf("[→] %s...\n", label)
 		args := append([]string{"install"}, packages[runtime]...)
-		if err := Run("", pm, append(args, "-y")...); err != nil {
+		if err := runHeavy("", label, pm, append(args, "-y")...); err != nil {
 			return fmt.Errorf("%s install: %w", runtime, err)
 		}
 	}
@@ -103,7 +190,7 @@ func Install(items []string, defaultProxy bool) error {
 			"https://sh.rustup.rs", "-o", "/tmp/rustup.sh"); err != nil {
 			return fmt.Errorf("rustup download: %w", err)
 		}
-		if err := Run("", "sh", "/tmp/rustup.sh", "-y"); err != nil {
+		if err := runHeavy("", "Installing Rust", "sh", "/tmp/rustup.sh", "-y"); err != nil {
 			return fmt.Errorf("rustup install: %w", err)
 		}
 	}
@@ -146,7 +233,7 @@ func installDocker(pm string) error {
 	if pm == "dnf" {
 		pkg = "docker"
 	}
-	if err := Run("", pm, "install", pkg, "-y"); err != nil {
+	if err := runHeavy("", "Installing Docker", pm, "install", pkg, "-y"); err != nil {
 		return fmt.Errorf("docker install: %w", err)
 	}
 
@@ -163,7 +250,7 @@ func installDocker(pm string) error {
 // sites-available/sites-enabled layout + nginx.conf patch.
 func installNginx(pm string) error {
 	fmt.Println("[→] Installing nginx...")
-	if err := Run("", pm, "install", "nginx", "-y"); err != nil {
+	if err := runHeavy("", "Installing Nginx", pm, "install", "nginx", "-y"); err != nil {
 		return fmt.Errorf("nginx install: %w", err)
 	}
 
@@ -222,7 +309,7 @@ func installCertbot(pm string) error {
 	if pm != "apt" && pm != "dnf" {
 		return fmt.Errorf("certbot install: unsupported package manager %q", pm)
 	}
-	if err := Run("", pm, "install", "certbot", "python3-certbot-nginx", "-y"); err != nil {
+	if err := runHeavy("", "Installing Certbot", pm, "install", "certbot", "python3-certbot-nginx", "-y"); err != nil {
 		return fmt.Errorf("certbot %s install: %w", pm, err)
 	}
 	fmt.Println("[✓] certbot installed")

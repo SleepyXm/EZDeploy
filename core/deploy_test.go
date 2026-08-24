@@ -113,6 +113,13 @@ func TestNewProjectRollbackDoesNotRecreateCloneFromTrackedEnv(t *testing.T) {
 	}
 }
 
+func TestAvailableMemoryIncludesFreeSwap(t *testing.T) {
+	got := parseAvailableMemory("MemTotal: 1048576 kB\nMemAvailable: 300000 kB\nSwapFree: 250000 kB\n")
+	if got != 550000<<10 {
+		t.Fatalf("available memory = %d; want %d", got, int64(550000<<10))
+	}
+}
+
 func TestRoutesFlowFromSourceIntoNginx(t *testing.T) {
 	config, err := walker.LoadConfig(filepath.Join("..", "yamls", "walk.yml"))
 	if err != nil {

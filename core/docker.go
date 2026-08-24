@@ -37,7 +37,7 @@ func DeployDocker(deployment DockerDeployment) error {
 
 	containerName, imageName := dockerNames(deployment.ProjectName)
 	fmt.Printf("[→] Building %s from %s...\n", imageName, deployment.Dockerfile)
-	if err := Run("", "docker", "build", "--file", dockerfile, "--tag", imageName, contextPath); err != nil {
+	if err := runHeavy("", "Building Docker image", "docker", "build", "--file", dockerfile, "--tag", imageName, contextPath); err != nil {
 		return fmt.Errorf("docker build: %w", err)
 	}
 

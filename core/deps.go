@@ -93,7 +93,7 @@ func installPythonDeps(projectPath string) error {
 	}
 	// Re-reading the manifest on every deploy installs dependencies added by a pull while preserving this service's isolated environment.
 	fmt.Println("[→] Synchronizing Python dependencies in .venv...")
-	if err := Run(projectPath, python, args...); err != nil {
+	if err := runHeavy(projectPath, "Synchronizing Python dependencies", python, args...); err != nil {
 		return fmt.Errorf("python dependency install: %w", err)
 	}
 	fmt.Println("[✓] Python virtual environment ready")
@@ -102,7 +102,7 @@ func installPythonDeps(projectPath string) error {
 
 func installNodeDeps(projectPath string) error {
 	fmt.Println("[→] Node service selected, installing dependencies...")
-	if err := Run(projectPath, "npm", "install"); err != nil {
+	if err := runHeavy(projectPath, "Installing Node dependencies", "npm", "install"); err != nil {
 		return fmt.Errorf("npm install: %w", err)
 	}
 	fmt.Println("[✓] Dependencies installed")
@@ -128,7 +128,7 @@ func buildGoService(projectPath, entry string) (string, error) {
 	// Every deployment rebuilds the selected target; an existing binary may
 	// represent an older commit or another cmd/* service in the same module.
 	fmt.Printf("[→] Go service selected, building %s from %s...\n", binaryName, target)
-	if err := Run(projectPath, "go", "build", "-buildvcs=false", "-o", binaryName, target); err != nil {
+	if err := runHeavy(projectPath, "Building Go service", "go", "build", "-p=1", "-buildvcs=false", "-o", binaryName, target); err != nil {
 		return "", fmt.Errorf("go build: %w", err)
 	}
 	if err := os.Chmod(filepath.Join(projectPath, binaryName), 0o755); err != nil {

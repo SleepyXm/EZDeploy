@@ -18,6 +18,7 @@ sudo ./ezdeploy
 ```
 
 Projects are stored under `/opt/ezdeploy/projects/<project-name>`. EZDeploy does not upgrade the operating system when it starts.
+Memory-heavy installs and builds require at least 512 MiB of currently available RAM or swap. Go builds compile one package at a time to reduce peak memory, and interactive terminals report elapsed time during long-running work.
 
 ## Deploy
 
