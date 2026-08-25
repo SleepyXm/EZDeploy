@@ -19,6 +19,8 @@ const fallbackMaxFileSizeBytes int64 = 2 * 1024 * 1024
 
 var methodTokenPattern = regexp.MustCompile(`[A-Za-z]+`)
 var pythonAppPattern = regexp.MustCompile(`(?m)^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(FastAPI|Flask)\s*\(`)
+var goRouterFunctionPattern = regexp.MustCompile(`(?m)func\s+(\w+)\s*\(\s*\w+\s+\*gin\.RouterGroup\b`)
+var goRouterCallPattern = regexp.MustCompile("(?m)(?:\\w+\\.)?(\\w+)\\s*\\(\\s*(\\w+)(?:\\.Group\\(\\s*[\"`](/[^\"`\\s]*)[\"`]\\s*\\))?")
 
 type Rule struct {
 	Name       string
@@ -244,6 +246,7 @@ func (s *Scanner) Scan(root string) (Report, error) {
 
 	seenHits := map[string]struct{}{}
 	seenRoutes := map[string]struct{}{}
+	goSources := map[string][]byte{}
 	manifestDirs := map[string]map[string]bool{}
 	var serviceEntries []serviceEntry
 
@@ -300,6 +303,9 @@ func (s *Scanner) Scan(root string) (Report, error) {
 
 		if scanned {
 			report.FilesScanned++
+			if lang == "go" {
+				goSources[relPath], _ = os.ReadFile(path)
+			}
 		}
 
 		for _, hit := range hits {
@@ -329,6 +335,7 @@ func (s *Scanner) Scan(root string) (Report, error) {
 		return nil
 	})
 	if err == nil {
+		report.RouteHits = s.resolveMountedGoRoutes(report.RouteHits, goSources)
 		report.Services = s.discoverServices(absRoot, serviceEntries, manifestDirs)
 	}
 
@@ -366,6 +373,72 @@ func (s *Scanner) Scan(root string) (Report, error) {
 	})
 
 	return report, err
+}
+
+type goRouterFunction struct {
+	name, file string
+	start, end int
+}
+
+// resolveMountedGoRoutes connects registration calls such as
+// RegisterAuthRoutes(api.Group("/auth")) to routes declared in another file.
+func (s *Scanner) resolveMountedGoRoutes(hits []RouteHit, sources map[string][]byte) []RouteHit {
+	definitions, byFile := map[string][]goRouterFunction{}, map[string][]goRouterFunction{}
+	for file, data := range sources {
+		matches := goRouterFunctionPattern.FindAllSubmatchIndex(data, -1)
+		for index, match := range matches {
+			end := int(^uint(0) >> 1)
+			if index+1 < len(matches) {
+				end = 1 + bytes.Count(data[:matches[index+1][0]], []byte{'\n'})
+			}
+			fn := goRouterFunction{name: string(data[match[2]:match[3]]), file: file,
+				start: 1 + bytes.Count(data[:match[0]], []byte{'\n'}), end: end}
+			definitions[fn.name], byFile[file] = append(definitions[fn.name], fn), append(byFile[file], fn)
+		}
+	}
+	mounts := map[string]map[string]bool{}
+	for _, data := range sources {
+		prefixes := s.resolvePrefixes(data, "go")
+		for _, match := range goRouterCallPattern.FindAllStringSubmatch(string(data), -1) {
+			name, prefix := match[1], prefixes[match[2]]
+			if len(definitions[name]) != 1 {
+				continue // Ambiguous function names stay unmodified instead of receiving a guessed prefix.
+			}
+			if match[3] != "" {
+				prefix = normalizeRoute(prefix + match[3])
+			}
+			if prefix == "" || prefix == "/" {
+				continue
+			}
+			if mounts[name] == nil {
+				mounts[name] = map[string]bool{}
+			}
+			mounts[name][prefix] = true
+		}
+	}
+	resolved := make([]RouteHit, 0, len(hits))
+	for _, hit := range hits {
+		mounted := false
+		for _, fn := range byFile[hit.File] {
+			if hit.Line < fn.start || hit.Line >= fn.end {
+				continue
+			}
+			for prefix := range mounts[fn.name] {
+				copy := hit
+				if hit.MountRoot && hit.Path == "/" {
+					copy.Path = prefix
+				} else {
+					copy.Path = normalizeRoute(strings.TrimRight(prefix, "/") + "/" + strings.TrimLeft(hit.Path, "/"))
+				}
+				resolved, mounted = append(resolved, copy), true
+			}
+			break
+		}
+		if !mounted {
+			resolved = append(resolved, hit)
+		}
+	}
+	return resolved
 }
 
 func (s *Scanner) matchingServiceRules(base string) []ServiceRuleDef {
@@ -715,13 +788,18 @@ func (s *Scanner) scanFile(root, path, lang string) ([]EnvHit, []RouteHit, bool,
 			}
 			for _, match := range rule.Re.FindAllStringSubmatch(line, -1) {
 				method, routePath := capture(match, rule.MethodIdx), capture(match, rule.PathIdx)
+				mountRoot := routePath == ""
 				if prefix := prefixes[capture(match, rule.ReceiverIdx)]; prefix != "" {
-					routePath = strings.TrimRight(prefix, "/") + "/" + strings.TrimLeft(routePath, "/")
+					if mountRoot {
+						routePath = prefix
+					} else {
+						routePath = strings.TrimRight(prefix, "/") + "/" + strings.TrimLeft(routePath, "/")
+					}
 				}
 				for _, resolved := range s.expandMethods(method, rule.Multi) {
 					routeHits = append(routeHits, RouteHit{
 						Method: resolved, Path: normalizeRoute(routePath),
-						File: relPath, Line: lineNo, Rule: rule.Name,
+						File: relPath, Line: lineNo, Rule: rule.Name, MountRoot: mountRoot,
 					})
 				}
 			}

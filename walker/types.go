@@ -15,11 +15,12 @@ type EnvHit struct {
 
 // RouteHit records the literal route declaration found in source code.
 type RouteHit struct {
-	Method string `json:"method"`
-	Path   string `json:"path"`
-	File   string `json:"file"`
-	Line   int    `json:"line"`
-	Rule   string `json:"rule"`
+	Method    string `json:"method"`
+	Path      string `json:"path"`
+	File      string `json:"file"`
+	Line      int    `json:"line"`
+	Rule      string `json:"rule"`
+	MountRoot bool   `json:"-"` // Empty child paths belong to the exact root of a mounted group.
 }
 
 // DockerfileInfo contains only build metadata that can be read without executing it.

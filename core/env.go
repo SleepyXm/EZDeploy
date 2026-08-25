@@ -33,15 +33,20 @@ func SetupEnv(projectPath string, interactive, allowManualAdditions bool) error 
 		}
 		fmt.Printf("[!] Env discovery skipped: %v\n", err)
 	} else {
+		var configured, discovered []string
+		for _, key := range report.UniqueEnvNames() {
+			if existingKeys[key] {
+				configured = append(configured, key)
+			} else {
+				discovered = append(discovered, key)
+			}
+		}
 		if interactive {
-			printEnvDiscoveryReport(report)
+			printEnvDiscoveryReport(report, configured, discovered)
 		}
 
 		var missing []string
-		for _, key := range report.UniqueEnvNames() {
-			if existingKeys[key] {
-				continue
-			}
+		for _, key := range discovered {
 			if !interactive {
 				missing = append(missing, key)
 				continue
@@ -178,7 +183,7 @@ func input(prompt string) (string, error) {
 	}
 }
 
-func printEnvDiscoveryReport(report walker.Report) {
+func printEnvDiscoveryReport(report walker.Report, configured, discovered []string) {
 	if len(report.Languages) > 0 {
 		fmt.Println("\n[→] Detected languages:")
 
@@ -194,16 +199,26 @@ func printEnvDiscoveryReport(report walker.Report) {
 		}
 	}
 
-	if len(report.EnvHits) == 0 {
+	if len(configured)+len(discovered) == 0 {
 		fmt.Println("\n[→] No environment variables discovered automatically.")
 		return
 	}
 
-	fmt.Println("\n[→] Discovered environment variables:")
-
-	for _, hit := range report.EnvHits {
-		fmt.Printf("  - %-30s %s:%d  [%s]\n", hit.Name, hit.Path, hit.Line, hit.Rule)
+	fmt.Println("\n[✓] Already configured environment variables:")
+	if len(configured) == 0 {
+		fmt.Println("  - none")
+	} else {
+		for _, key := range configured {
+			fmt.Printf("  - %s\n", key)
+		}
 	}
-
-	fmt.Println("\n[→] Enter values for discovered variables:")
+	fmt.Println("\n[→] Newly discovered environment variables:")
+	if len(discovered) == 0 {
+		fmt.Println("  - none")
+		return
+	}
+	for _, key := range discovered {
+		fmt.Printf("  - %s\n", key)
+	}
+	fmt.Println("\n[→] Enter values for newly discovered variables:")
 }

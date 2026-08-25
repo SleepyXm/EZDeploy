@@ -141,7 +141,7 @@ prefix_rules:
 route_rules:
   - name: dot-method
     languages: [go, javascript, typescript]
-    pattern: '(?P<receiver>\w+)\.(?P<method>METHOD)\s*\(\s*["`](?P<path>/[^"`\s]*)'
+    pattern: '(?P<receiver>\w+)\.(?P<method>METHOD)\s*\(\s*["`](?P<path>(?:/[^"`\s]*)?)["`]'
   - name: python-decorator
     language: python
     pattern: '@(?P<receiver>\w+)\.(?P<method>METHOD)\s*\(\s*["`](?P<path>/[^"`\s]+)'

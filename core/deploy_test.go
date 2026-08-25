@@ -132,6 +132,21 @@ func TestRoutesFlowFromSourceIntoNginx(t *testing.T) {
 
 	root := t.TempDir()
 	sources := map[string]string{
+		"main.go": `api := router.Group("/api")
+routes.RegisterAuthRoutes(api.Group("/auth"), db)
+routes.RegisterAgentRoutes(api, db)`,
+		"routes/auth.go": `func RegisterAuthRoutes(rg *gin.RouterGroup, db *sql.DB) {
+rg.GET("", root)
+rg.POST("/signup", signup)
+}`,
+		"routes/agents.go": `func RegisterAgentRoutes(
+rg *gin.RouterGroup,
+db *sql.DB,
+) {
+agentRoutes := rg.Group("/agents")
+agentRoutes.POST("", agents)
+}`,
+		"handler.go": `mediaType := fileHeader.Header.Get("Content-Type")`,
 		"Dockerfile": `FROM node:22-alpine
 EXPOSE 3000`,
 		"deploy/prod.Dockerfile": `FROM golang:1.25 AS build
@@ -163,7 +178,7 @@ def login(): pass`,
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"/admin/{id}", "/api/auth/login", "/api/users/:id", "/login", "/v1/items/:id"}
+	want := []string{"/admin/{id}", "/api/agents", "/api/auth", "/api/auth/login", "/api/auth/signup", "/api/users/:id", "/login", "/v1/items/:id"}
 	if got := report.UniqueRoutePaths(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("routes = %#v, want %#v", got, want)
 	}
@@ -192,7 +207,10 @@ def login(): pass`,
 	for _, expected := range []string{
 		`location /api/ {`,
 		`location ~ ^/admin/[^/]+/?$`,
+		`location = /api/agents`,
+		`location = /api/auth`,
 		`location = /api/auth/login`,
+		`location = /api/auth/signup`,
 		`location ~ ^/api/users/[^/]+/?$`,
 		`location = /login`,
 		`proxy_pass http://127.0.0.1:9090`,
