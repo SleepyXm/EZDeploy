@@ -139,6 +139,8 @@ FROM alpine:3.22
 EXPOSE 8080/tcp 8081`,
 		"routes.go": `api := r.Group("/api")
 api.GET("/users/:id", getUser)
+auth := api.Group("/auth")
+auth.POST("/login", login)
 // api.DELETE("/commented", deleteUser)`,
 		"routes.js": `app.use("/v1", router)
 router.post("/items/:id", createItem)`,
@@ -161,7 +163,7 @@ def login(): pass`,
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"/admin/{id}", "/api/users/:id", "/login", "/v1/items/:id"}
+	want := []string{"/admin/{id}", "/api/auth/login", "/api/users/:id", "/login", "/v1/items/:id"}
 	if got := report.UniqueRoutePaths(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("routes = %#v, want %#v", got, want)
 	}
@@ -188,16 +190,24 @@ def login(): pass`,
 		t.Fatal(err)
 	}
 	for _, expected := range []string{
+		`location /api/ {`,
 		`location ~ ^/admin/[^/]+/?$`,
+		`location = /api/auth/login`,
 		`location ~ ^/api/users/[^/]+/?$`,
 		`location = /login`,
 		`proxy_pass http://127.0.0.1:9090`,
 		`location ~ ^/v1/items/[^/]+/?$`,
+		`proxy_set_header X-Real-IP $remote_addr`,
+		`proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for`,
+		`proxy_set_header X-Forwarded-Proto $scheme`,
 		"location / {\n        return 404;",
 	} {
 		if !strings.Contains(nginx, expected) {
 			t.Errorf("generated nginx config is missing %q:\n%s", expected, nginx)
 		}
+	}
+	if strings.Contains(nginx, "location = /api {") {
+		t.Fatal("shared /api policy boundary became an undiscovered proxy endpoint")
 	}
 	if nginxBinary, err := exec.LookPath("nginx"); err == nil {
 		nginxRoot := t.TempDir()

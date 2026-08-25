@@ -23,21 +23,19 @@ type RouteTarget struct {
 	Port int
 }
 
-// proxyBlock keeps the existing streaming-compatible proxy settings in one place.
-func proxyBlock(location string, port int, streaming bool) string {
-	block := fmt.Sprintf(`    %s {
-        proxy_pass http://127.0.0.1:%d;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;`, location, port)
-
+// proxyPolicy is inherited by allowlisted child locations; only proxy_pass varies per route.
+func proxyPolicy(indent string, streaming bool) string {
+	lines := []string{"proxy_http_version 1.1;", "proxy_set_header Host $host;", "proxy_set_header X-Real-IP $remote_addr;",
+		"proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;", "proxy_set_header X-Forwarded-Proto $scheme;"}
 	if streaming {
-		block += `
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_cache_bypass $http_upgrade;
-        proxy_buffering off;`
+		lines = append(lines, "proxy_set_header Upgrade $http_upgrade;", "proxy_set_header Connection 'upgrade';",
+			"proxy_cache_bypass $http_upgrade;", "proxy_buffering off;")
 	}
-	return block + "\n    }"
+	return indent + strings.Join(lines, "\n"+indent)
+}
+
+func proxyBlock(location string, port int, streaming bool) string {
+	return fmt.Sprintf("    %s {\n        proxy_pass http://127.0.0.1:%d;\n%s\n    }", location, port, proxyPolicy("        ", streaming))
 }
 
 func routeLocation(path string) (string, error) {
@@ -83,6 +81,50 @@ func joinRoutePath(prefix, path string) string {
 		return normalizeRoutePath(path)
 	}
 	return normalizeRoutePath(strings.TrimRight(prefix, "/") + "/" + strings.TrimLeft(path, "/"))
+}
+
+// routeRoot returns the first static segment used as a policy boundary, not as a proxy catch-all.
+func routeRoot(path string) string {
+	segment := strings.Split(strings.TrimPrefix(normalizeRoutePath(path), "/"), "/")[0]
+	if segment == "" || strings.HasPrefix(segment, ":") || strings.HasPrefix(segment, "{") || strings.HasPrefix(segment, "<") || strings.HasPrefix(segment, "*") {
+		return ""
+	}
+	return "/" + segment
+}
+
+func groupedProxyBlocks(paths []string, ports map[string]int) ([]string, error) {
+	groups, blocks := map[string][]string{}, []string{}
+	for _, path := range paths {
+		root := routeRoot(path)
+		if root == "" || path == root {
+			location, err := routeLocation(path)
+			if err != nil {
+				return nil, err
+			}
+			blocks = append(blocks, proxyBlock(location, ports[path], true))
+			continue
+		}
+		groups[root] = append(groups[root], path)
+	}
+	orderedRoots := make([]string, 0, len(groups))
+	for root := range groups {
+		orderedRoots = append(orderedRoots, root)
+	}
+	sort.Strings(orderedRoots)
+	for _, root := range orderedRoots {
+		children := make([]string, 0, len(groups[root]))
+		for _, path := range groups[root] {
+			location, err := routeLocation(path)
+			if err != nil {
+				return nil, err
+			}
+			children = append(children, fmt.Sprintf("        %s {\n            proxy_pass http://127.0.0.1:%d;\n        }", location, ports[path]))
+		}
+		// The parent supplies shared headers but rejects every undiscovered child.
+		blocks = append(blocks, fmt.Sprintf("    location %s/ {\n%s\n%s\n        return 404;\n    }", root,
+			proxyPolicy("        ", true), strings.Join(children, "\n")))
+	}
+	return blocks, nil
 }
 
 // CreateNginxConfig writes, validates, and enables a project server block.
@@ -172,13 +214,9 @@ func renderNginxConfig(domain string, targets []RouteTarget, whitelist bool) (st
 		}
 		sort.Strings(paths)
 
-		var blocks []string
-		for _, path := range paths {
-			location, err := routeLocation(path)
-			if err != nil {
-				return "", "", err
-			}
-			blocks = append(blocks, proxyBlock(location, seen[path], true))
+		blocks, err := groupedProxyBlocks(paths, seen)
+		if err != nil {
+			return "", "", err
 		}
 		appLocations = strings.Join(blocks, "\n") + "\n    location / {\n        return 404;\n    }"
 	} else {

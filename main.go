@@ -52,14 +52,18 @@ func run(args []string) error {
 		_, err := program.Run()
 		return err
 	}
-	if args[0] != "deploy" {
+	switch args[0] {
+	case "deploy":
+		return deploy(args[1:], false)
+	case "redeploy":
+		return deploy(args[1:], true)
+	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
-	return deploy(args[1:])
 }
-func deploy(args []string) error {
+func deploy(args []string, redeploy bool) error {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		printDeployUsage()
+		printDeployUsage(redeploy)
 		return nil
 	}
 	repositories, options, err := guards.DeployArguments(args)
@@ -75,7 +79,7 @@ func deploy(args []string) error {
 		rollback, err := core.BeginDeploymentRollback(name, filepath.Join(core.CloneDir, name))
 		if err == nil {
 			rollbacks = append(rollbacks, rollback)
-			err = deployOne(append([]string{repository}, options...), rollback)
+			err = deployOne(append([]string{repository}, options...), rollback, redeploy)
 		}
 		if err != nil {
 			for index := len(rollbacks) - 1; index >= 0; index-- {
@@ -86,7 +90,7 @@ func deploy(args []string) error {
 	}
 	return nil
 }
-func deployOne(args []string, rollback *core.DeploymentRollback) error {
+func deployOne(args []string, rollback *core.DeploymentRollback, redeploy bool) error {
 	repoURL := args[0]
 	flags := flag.NewFlagSet("deploy", flag.ContinueOnError)
 	branch, sshKey := flags.String("branch", "", "repository branch"), flags.String("ssh-key", "", "private repository SSH key")
@@ -120,7 +124,12 @@ func deployOne(args []string, rollback *core.DeploymentRollback) error {
 			return fmt.Errorf("project %q conflicts with registered project %q", projectName, name)
 		}
 	}
-	existing := registry[projectName]
+	existing, registered := registry[projectName]
+	// Redeploy is deliberately the existing deployment path with a registry guard:
+	// saved runtime, services, ports and proxy settings are reused after every rescan.
+	if redeploy && !registered {
+		return fmt.Errorf("%s is not deployed; run deploy first", repoURL)
+	}
 	// A redeploy stays on its registered branch unless the user overrides it.
 	*branch = guards.FirstValue(*branch, existing.Branch)
 	projectPath, err := core.CloneRepoWithOptions(repoURL, core.CloneOptions{Branch: *branch, SSHKey: *sshKey})
@@ -376,10 +385,14 @@ func installationRoot() (string, error) {
 	return root, nil
 }
 func printUsage() {
-	fmt.Println("Usage: ezdeploy | sudo ezdeploy deploy <repository...> [options]")
+	fmt.Println("Usage: ezdeploy | sudo ezdeploy <deploy|redeploy> <repository...> [options]")
 }
-func printDeployUsage() {
-	fmt.Println(`Usage: sudo ezdeploy deploy <repository...> [options]
+func printDeployUsage(redeploy bool) {
+	command := "deploy"
+	if redeploy {
+		command = "redeploy"
+	}
+	fmt.Printf(`Usage: sudo ezdeploy %s <repository...> [options]
   --branch <name>              repository branch
   --ssh-key <path>             private repository key
   --domain <host>              application domain
@@ -393,5 +406,6 @@ func printDeployUsage() {
   --container-port <number>    application port inside the container
   --non-interactive            fail instead of prompting for missing values
   --allow-route <path>         additional allowed path; repeatable
-  --no-route-whitelist         proxy every application path`)
+  --no-route-whitelist         proxy every application path
+`, command)
 }

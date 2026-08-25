@@ -30,6 +30,14 @@ sudo /opt/ezdeploy/ezdeploy deploy https://github.com/example/api https://github
 
 The deploy command clones or fast-forwards each repository, scans it, selects a runtime, prepares dependencies and environment values, starts the application, configures Nginx, provisions HTTPS, and saves the result in `registry.json`. If any repository in a batch fails, earlier repositories are restored to their previous Git revisions, units, Nginx configuration, and registry records.
 
+## Redeploy
+
+```bash
+sudo /opt/ezdeploy/ezdeploy redeploy https://github.com/example/backend
+```
+
+Redeploy requires an existing registry record. It pulls the registered branch, reuses the saved runtime, services, ports, domain and start commands, then rescans routes and every registered service's environment variables before rebuilding and restarting. Existing `.env` values are preserved; newly discovered keys are requested interactively or rejected with `--non-interactive`. The normal deployment rollback protects the previous release if any service fails.
+
 | Option | Purpose |
 | --- | --- |
 | `--branch <name>` | Select a Git branch. |
@@ -80,14 +88,14 @@ The key is passed to Git for that process only and is not copied or registered. 
 
 ```bash
 ssh -i ~/.ssh/ec2.pem ubuntu@server \
-  'sudo /opt/ezdeploy/ezdeploy deploy git@github.com:example/private-backend.git --ssh-key /home/ubuntu/.ssh/backend_deploy --non-interactive'
+  'sudo /opt/ezdeploy/ezdeploy redeploy git@github.com:example/private-backend.git --ssh-key /home/ubuntu/.ssh/backend_deploy --non-interactive'
 ```
 
 Git updates use `merge --ff-only`; server divergence is rejected rather than overwritten. Non-interactive deployment also stops when a newly discovered environment variable has no saved value.
 
 ## Routes, environment, and services
 
-Route and Dockerfile rules extend the existing `yamls/walk.yml`. Common literal Go, Express, FastAPI, and Flask routes become Nginx locations; unknown paths return `404`. Dynamic or cross-file routes can be supplied with `--allow-route`, which must be repeated on later deployments.
+Route and Dockerfile rules extend the existing `yamls/walk.yml`. Common literal Go, Express, FastAPI, and Flask routes become Nginx locations; shared roots such as `/api` own forwarded and streaming headers while only discovered child routes are proxied. Unknown paths still return `404`. Dynamic or cross-file routes can be supplied with `--allow-route`, which must be repeated on later deployments.
 
 The same walker lists Python, Go, and Node backend candidates in mixed-language repositories. Each candidate includes its service root, entry file, likely start command, confidence, and the filename, manifest, and server markers that produced the match. Interactive selection accepts comma-separated indexes such as `2,3`; `--service app/backend,go-backend` provides the non-interactive equivalent. Every selected service receives its own port, systemd unit, registry service record, working directory, dependency preparation, and Nginx route targets. A failure restores the repository as one release rather than leaving half of a monorepo running the new revision.
 
