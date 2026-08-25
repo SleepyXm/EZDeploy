@@ -9,9 +9,9 @@ import (
 	"strings"
 )
 
-// SetupEnv discovers and writes environment values. Interactive deployments
-// prompt for missing values; automated deployments reject them.
-func SetupEnv(projectPath string, interactive bool) error {
+// SetupEnv preserves existing values and writes newly discovered ones. Manual
+// additions belong to first deploys; redeploys only ask for new scanned keys.
+func SetupEnv(projectPath string, interactive, allowManualAdditions bool) error {
 	envOutput := filepath.Join(projectPath, ".env")
 	envValues := map[string]string{}
 	existing, err := os.ReadFile(envOutput)
@@ -67,29 +67,27 @@ func SetupEnv(projectPath string, interactive bool) error {
 		return nil
 	}
 
-	fmt.Printf("\n[→] Add extra environment variables (leave key blank when done):\n\n")
-
-	for {
-		key, err := input("Key: ")
-		if err != nil {
-			return err
+	if allowManualAdditions {
+		fmt.Printf("\n[→] Add extra environment variables (leave key blank when done):\n\n")
+		for {
+			key, err := input("Key: ")
+			if err != nil {
+				return err
+			}
+			key = strings.TrimSpace(key)
+			if key == "" {
+				break
+			}
+			if existingKeys[key] {
+				fmt.Printf("[!] %s already exists; preserving its value\n", key)
+				continue
+			}
+			value, err := input("Value: ")
+			if err != nil {
+				return err
+			}
+			envValues[key] = strings.TrimSpace(value)
 		}
-
-		key = strings.TrimSpace(key)
-		if key == "" {
-			break
-		}
-		if existingKeys[key] {
-			fmt.Printf("[!] %s already exists; preserving its value\n", key)
-			continue
-		}
-
-		value, err := input("Value: ")
-		if err != nil {
-			return err
-		}
-
-		envValues[key] = strings.TrimSpace(value)
 	}
 
 	if len(envValues) == 0 {

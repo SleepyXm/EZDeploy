@@ -163,7 +163,7 @@ func deployOne(args []string, rollback *core.DeploymentRollback, redeploy bool) 
 		if err := rollback.TrackFile(filepath.Join(projectPath, ".env")); err != nil {
 			return err
 		}
-		if err := core.SetupEnv(projectPath, !*nonInteractive); err != nil {
+		if err := core.SetupEnv(projectPath, !*nonInteractive, !redeploy); err != nil {
 			return err
 		}
 		for _, hit := range report.RouteHits {
@@ -231,7 +231,7 @@ func deployOne(args []string, rollback *core.DeploymentRollback, redeploy bool) 
 			if err := rollback.TrackFile(filepath.Join(path, ".env")); err != nil {
 				return err
 			}
-			if err := core.SetupEnv(path, !*nonInteractive); err != nil {
+			if err := core.SetupEnv(path, !*nonInteractive, !redeploy); err != nil {
 				return err
 			}
 			prepared := ""
