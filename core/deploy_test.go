@@ -1,12 +1,21 @@
 package core
 
 import (
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"errors"
+	"math/big"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"EZDeploy/walker"
 )
@@ -92,6 +101,13 @@ func TestNonInteractiveEnvironmentValidation(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf(".env mode = %v; want 0600", info.Mode().Perm())
+	}
+	before, _ := os.ReadFile(envPath)
+	if err := ValidateEnv(project); err != nil {
+		t.Fatal(err)
+	}
+	if after, _ := os.ReadFile(envPath); !reflect.DeepEqual(after, before) {
+		t.Fatalf("rollback validation changed .env: before %q after %q", before, after)
 	}
 
 	if err := os.WriteFile(filepath.Join(project, "main.go"), []byte(`os.Getenv("NEW_TOKEN")`), 0o644); err != nil {
@@ -398,5 +414,182 @@ func TestRouteLocationParameters(t *testing.T) {
 		if got != want {
 			t.Errorf("routeLocation(%q) = %q, want %q", input, got, want)
 		}
+	}
+}
+
+func TestReleaseRetentionLookupAndGitRefs(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	projectPath := filepath.Join(root, "projects", "sample")
+	if err := os.MkdirAll(projectPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	testGit(t, "init", "-b", "main", projectPath)
+	testGit(t, "-C", projectPath, "config", "user.name", "EZDeploy Test")
+	testGit(t, "-C", projectPath, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(projectPath, "app.txt"), []byte("release"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	testGit(t, "-C", projectPath, "add", "app.txt")
+	testGit(t, "-C", projectPath, "commit", "-m", "release")
+	revision, _ := CurrentRevision(projectPath)
+	if err := RegisterProject("sample", Project{Path: projectPath, Port: 8000, RepoURL: "https://github.com/acme/sample.git", Revision: revision}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := RecordSuccessfulRelease("sample", revision, revision, "redeploy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 20; index++ {
+		if _, err := RecordSuccessfulRelease("sample", revision, revision, "redeploy"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	name, project, err := ResolveProject("github.com/acme/sample")
+	if err != nil || name != "sample" {
+		t.Fatalf("repository lookup = %q, %v", name, err)
+	}
+	if len(project.Releases) != 20 {
+		t.Fatalf("release count = %d, want 20", len(project.Releases))
+	}
+	if err := exec.Command("git", "-C", projectPath, "show-ref", "--verify", "refs/ezdeploy/releases/"+first.ID).Run(); err == nil {
+		t.Fatal("pruned release ref still exists")
+	}
+	refs, err := gitOutput(projectPath, "for-each-ref", "--format=%(refname)", "refs/ezdeploy/releases")
+	if err != nil || len(strings.Fields(refs)) != 20 {
+		t.Fatalf("release refs = %q, %v", refs, err)
+	}
+}
+
+func TestRestoreGitStatePreservesDetachedHead(t *testing.T) {
+	project := t.TempDir()
+	testGit(t, "init", "-b", "main", project)
+	testGit(t, "-C", project, "config", "user.name", "EZDeploy Test")
+	testGit(t, "-C", project, "config", "user.email", "test@example.com")
+	file := filepath.Join(project, "version")
+	if err := os.WriteFile(file, []byte("one"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	testGit(t, "-C", project, "add", "version")
+	testGit(t, "-C", project, "commit", "-m", "one")
+	first, _ := CurrentRevision(project)
+	if err := os.WriteFile(file, []byte("two"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	testGit(t, "-C", project, "commit", "-am", "two")
+	testGit(t, "-C", project, "checkout", "--detach", first)
+	state, err := CurrentGitState(project)
+	if err != nil || state.Branch != "" {
+		t.Fatalf("detached state = %#v, %v", state, err)
+	}
+	testGit(t, "-C", project, "checkout", "main")
+	if err := RestoreGitState(project, state); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := CurrentGitState(project)
+	if got != state {
+		t.Fatalf("restored state = %#v, want %#v", got, state)
+	}
+}
+
+func TestLogProvidersAndServiceSelection(t *testing.T) {
+	project := Project{Runtime: "native", Services: []Service{{Name: "api", Unit: "ezdeploy-api", Runtime: "go"}, {Name: "worker", Unit: "ezdeploy-worker", Runtime: "python"}}}
+	if _, err := LogCommand("sample", project, LogOptions{Source: "runtime"}); err == nil {
+		t.Fatal("multi-service runtime logs did not require a service")
+	}
+	command, err := LogCommand("sample", project, LogOptions{Source: "runtime", Service: "worker", Lines: 25, Follow: true})
+	if err != nil || !reflect.DeepEqual(command.Args, []string{"journalctl", "-u", "ezdeploy-worker", "-n", "25", "--follow"}) {
+		t.Fatalf("systemd log command = %#v, %v", command.Args, err)
+	}
+	command, err = LogCommand("sample", Project{Runtime: "docker", Services: []Service{{Name: "sample", Runtime: "docker"}}}, LogOptions{Source: "runtime", Lines: 10})
+	if err != nil || !reflect.DeepEqual(command.Args, []string{"docker", "logs", "--tail", "10", "ezdeploy-sample"}) {
+		t.Fatalf("Docker log command = %#v, %v", command.Args, err)
+	}
+	command, err = LogCommand("sample", project, LogOptions{Source: "deployment"})
+	if err != nil || !strings.Contains(strings.Join(command.Args, " "), "project=sample") {
+		t.Fatalf("deployment log command = %#v, %v", command.Args, err)
+	}
+	message := operationLogMessage("sample\nTOKEN=secret", "redeploy --token secret", "failed: secret")
+	if message != "project=unknown operation=unknown status=unknown" || strings.Contains(message, "secret") {
+		t.Fatalf("unsafe operation log message = %q", message)
+	}
+}
+
+type fakeMetadata struct {
+	ip  string
+	err error
+}
+
+func (f fakeMetadata) PublicIPv4(context.Context) (string, error) { return f.ip, f.err }
+
+type fakeResolver map[string][]string
+
+func (f fakeResolver) LookupHost(_ context.Context, host string) ([]string, error) {
+	addresses, ok := f[host]
+	if !ok {
+		return nil, errors.New("not found")
+	}
+	return addresses, nil
+}
+
+func TestNetworkMatchMismatchAndWildcard(t *testing.T) {
+	metadata := fakeMetadata{ip: "203.0.113.10"}
+	report := CheckNetwork(context.Background(), Project{Domain: "api.example.com"}, metadata, fakeResolver{"api.example.com": {"203.0.113.10"}})
+	if !report.Match || !report.MetadataAvailable {
+		t.Fatalf("matching network report = %#v", report)
+	}
+	report = CheckNetwork(context.Background(), Project{Domain: "*.example.com"}, metadata, fakeResolver{"ezdeploy-check.example.com": {"203.0.113.11"}})
+	if report.Match || report.Hostname != "ezdeploy-check.example.com" || report.Record != "*.example.com" {
+		t.Fatalf("wildcard mismatch report = %#v", report)
+	}
+	report = CheckNetwork(context.Background(), Project{Domain: "api.example.com"}, fakeMetadata{err: errors.New("timeout")}, fakeResolver{})
+	if report.MetadataAvailable || len(report.Addresses) != 0 {
+		t.Fatalf("metadata-unavailable report = %#v", report)
+	}
+}
+
+func TestWildcardTLSValidationAndNginxRendering(t *testing.T) {
+	public, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "*.example.com"}, DNSNames: []string{"*.example.com"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour)}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, public, private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, _ := x509.MarshalPKCS8PrivateKey(private)
+	certPath, keyPath := filepath.Join(t.TempDir(), "wildcard.crt"), filepath.Join(t.TempDir(), "wildcard.key")
+	if err := os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: key}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config, _, wildcard, err := renderNginxConfigWithTLS("*.example.com", []RouteTarget{{Path: "/health", Port: 8000}}, true, certPath, keyPath)
+	if err != nil || !wildcard {
+		t.Fatalf("wildcard render: %v", err)
+	}
+	for _, expected := range []string{"listen 443 ssl", `server_name ~^[^.]+\.example\.com$`, "return 301 https://$host$request_uri", "ssl_certificate " + certPath} {
+		if !strings.Contains(config, expected) {
+			t.Errorf("wildcard config missing %q:\n%s", expected, config)
+		}
+	}
+	if nginxBinary, err := exec.LookPath("nginx"); err == nil {
+		nginxRoot := t.TempDir()
+		fullConfig := "pid " + filepath.Join(nginxRoot, "nginx.pid") + ";\nerror_log stderr;\nevents {}\nhttp {\n" + config + "}\n"
+		configPath := filepath.Join(nginxRoot, "nginx.conf")
+		if err := os.WriteFile(configPath, []byte(fullConfig), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if output, err := exec.Command(nginxBinary, "-t", "-e", "stderr", "-p", nginxRoot, "-c", configPath).CombinedOutput(); err != nil {
+			if strings.Contains(string(output), "Operation not permitted") {
+				t.Skip("nginx parser is blocked by the execution sandbox")
+			}
+			t.Fatalf("nginx rejected wildcard config: %v\n%s", err, output)
+		}
+	}
+	if _, _, _, err := renderNginxConfigWithTLS("api.*.example.com", []RouteTarget{{Path: "/", Port: 8000}}, true, certPath, keyPath); err == nil {
+		t.Fatal("embedded wildcard domain was accepted")
 	}
 }

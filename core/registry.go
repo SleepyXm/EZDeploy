@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
+	"strings"
+	"time"
 )
 
 const (
@@ -33,6 +36,17 @@ type Project struct {
 	Services       []Service `json:"services,omitempty"`
 	SigningKey     string    `json:"signing_key,omitempty"` // Ed25519 private key seed (base64) — never logged
 	SSHKey         string    `json:"ssh_key,omitempty"`     // path to SSH private key for private repos
+	TLSCert        string    `json:"tls_cert,omitempty"`
+	TLSKey         string    `json:"tls_key,omitempty"`
+	Releases       []Release `json:"releases,omitempty"`
+}
+
+// Release is one successful deploy operation pinned by a Git reference.
+type Release struct {
+	ID         string    `json:"id"`
+	Revision   string    `json:"revision"`
+	DeployedAt time.Time `json:"deployed_at"`
+	Operation  string    `json:"operation"`
 }
 
 // Service is one independently managed process inside a repository project.
@@ -93,7 +107,8 @@ func saveRegistry(reg Registry) error {
 	if err != nil {
 		return fmt.Errorf("marshal registry: %w", err)
 	}
-	if err := os.WriteFile(registryPath, data, 0o644); err != nil {
+	// The registry may contain webhook signing material and private-key paths.
+	if err := os.WriteFile(registryPath, data, 0o600); err != nil {
 		return fmt.Errorf("write registry: %w", err)
 	}
 	return nil
@@ -150,6 +165,12 @@ func RegisterProject(projectName string, project Project) error {
 	if project.Email != "" {
 		existing.Email = project.Email
 	}
+	if project.TLSCert != "" {
+		existing.TLSCert = project.TLSCert
+	}
+	if project.TLSKey != "" {
+		existing.TLSKey = project.TLSKey
+	}
 
 	if project.RepoURL != "" {
 		existing.RepoURL = project.RepoURL
@@ -191,6 +212,9 @@ func RegisterProject(projectName string, project Project) error {
 			existing.ServiceRoot, existing.ServiceEntry, existing.ServiceRuntime = "", "", ""
 		}
 	}
+	if project.Releases != nil {
+		existing.Releases = append([]Release(nil), project.Releases...)
+	}
 
 	if project.Status != "" {
 		existing.Status = project.Status
@@ -209,6 +233,100 @@ func RegisterProject(projectName string, project Project) error {
 // GetRegistry returns the current registry state.
 func GetRegistry() (Registry, error) {
 	return loadRegistry()
+}
+
+// SortedProjects is the stable order shared by the dashboard and commands.
+func SortedProjects(reg Registry) []string {
+	names := make([]string, 0, len(reg))
+	for name := range reg {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// ResolveProject accepts either a registry name or the repository it records.
+func ResolveProject(identifier string) (string, Project, error) {
+	reg, err := loadRegistry()
+	if err != nil {
+		return "", Project{}, err
+	}
+	identifier = strings.TrimSpace(identifier)
+	if project, ok := reg[identifier]; ok {
+		return identifier, project, nil
+	}
+	wanted := repoIdentity(normalizeRepoURL(identifier))
+	for _, name := range SortedProjects(reg) {
+		if repoIdentity(normalizeRepoURL(reg[name].RepoURL)) == wanted && wanted != "" {
+			return name, reg[name], nil
+		}
+	}
+	return "", Project{}, fmt.Errorf("project %q is not registered", identifier)
+}
+
+// RecordSuccessfulRelease stores the prior legacy revision once, then the new event.
+func RecordSuccessfulRelease(projectName, priorRevision, revision, operation string) (Release, error) {
+	if operation != "deploy" && operation != "redeploy" && operation != "rollback" {
+		return Release{}, fmt.Errorf("invalid release operation %q", operation)
+	}
+	reg, err := loadRegistry()
+	if err != nil {
+		return Release{}, err
+	}
+	project, ok := reg[projectName]
+	if !ok {
+		return Release{}, fmt.Errorf("project %q is not registered", projectName)
+	}
+	created := []Release{}
+	if len(project.Releases) == 0 && priorRevision != "" {
+		created = append(created, newRelease(priorRevision, "deploy", project.Releases))
+	}
+	release := newRelease(revision, operation, append(project.Releases, created...))
+	created = append(created, release)
+	for _, item := range created {
+		if err := CreateReleaseRef(project.Path, item.ID, item.Revision); err != nil {
+			for _, made := range created {
+				if made.ID == item.ID {
+					break
+				}
+				_ = DeleteReleaseRef(project.Path, made.ID)
+			}
+			return Release{}, err
+		}
+	}
+	project.Releases = append(project.Releases, created...)
+	var pruned []Release
+	if len(project.Releases) > 20 {
+		pruned, project.Releases = project.Releases[:len(project.Releases)-20], project.Releases[len(project.Releases)-20:]
+	}
+	reg[projectName] = project
+	if err := saveRegistry(reg); err != nil {
+		for _, item := range created {
+			_ = DeleteReleaseRef(project.Path, item.ID)
+		}
+		return Release{}, err
+	}
+	for _, item := range pruned {
+		_ = DeleteReleaseRef(project.Path, item.ID)
+	}
+	return release, nil
+}
+
+func newRelease(revision, operation string, existing []Release) Release {
+	short := revision
+	if len(short) > 8 {
+		short = short[:8]
+	}
+	base := time.Now().UTC().Format("20060102T150405Z") + "-" + short
+	used := map[string]bool{}
+	for _, release := range existing {
+		used[release.ID] = true
+	}
+	id := base
+	for suffix := 2; used[id]; suffix++ {
+		id = fmt.Sprintf("%s-%d", base, suffix)
+	}
+	return Release{ID: id, Revision: revision, DeployedAt: time.Now().UTC(), Operation: operation}
 }
 
 // UnregisterProject removes a project from the registry.

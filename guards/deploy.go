@@ -12,7 +12,7 @@ import (
 var singleProjectFlags = map[string]bool{
 	"--domain": true, "--port": true, "--start": true, "--service": true,
 	"--dockerfile": true, "--docker-context": true, "--container-port": true,
-	"--allow-route": true,
+	"--allow-route": true, "--tls-cert": true, "--tls-key": true,
 }
 
 // FirstValue returns the first supplied value that is not empty.

@@ -1,6 +1,8 @@
 package core
 
 import (
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,7 +17,7 @@ const (
 	webhookPort         = 9001
 )
 
-var serverNamePattern = regexp.MustCompile(`^[A-Za-z0-9.-]+$`)
+var hostnameLabelPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$`)
 
 // RouteTarget binds one discovered route to the service port that owns it.
 type RouteTarget struct {
@@ -129,13 +131,13 @@ func groupedProxyBlocks(paths []string, ports map[string]int) ([]string, error) 
 
 // CreateNginxConfig writes, validates, and enables a project server block.
 // whitelist=false preserves the old unrestricted proxy behavior explicitly.
-func CreateNginxConfig(projectName, domain, email string, targets []RouteTarget, whitelist bool) error {
+func CreateNginxConfig(projectName, domain, email string, targets []RouteTarget, whitelist bool, tlsCert, tlsKey string) error {
 	if !projectNamePattern.MatchString(projectName) || len(projectName) > 100 {
 		return fmt.Errorf("invalid project name %q", projectName)
 	}
 	configPath := filepath.Join(nginxSitesAvailable, projectName)
 	symlinkPath := filepath.Join(nginxSitesEnabled, projectName)
-	config, domainPart, err := renderNginxConfig(domain, targets, whitelist)
+	config, domainPart, wildcard, err := renderNginxConfigWithTLS(domain, targets, whitelist, tlsCert, tlsKey)
 	if err != nil {
 		return err
 	}
@@ -171,20 +173,32 @@ func CreateNginxConfig(projectName, domain, email string, targets []RouteTarget,
 	}
 
 	fmt.Println("[✓] Nginx configured")
+	if wildcard {
+		return nil
+	}
 	return setupSSL(domainPart, email)
 }
 
 func renderNginxConfig(domain string, targets []RouteTarget, whitelist bool) (string, string, error) {
+	config, domainPart, _, err := renderNginxConfigWithTLS(domain, targets, whitelist, "", "")
+	return config, domainPart, err
+}
+
+func renderNginxConfigWithTLS(domain string, targets []RouteTarget, whitelist bool, tlsCert, tlsKey string) (string, string, bool, error) {
 	domain = strings.TrimSpace(domain)
 	domainPart, basePath := domain, "/"
 	if idx := strings.IndexByte(domain, '/'); idx != -1 {
 		domainPart, basePath = domain[:idx], domain[idx:]
 	}
-	if !serverNamePattern.MatchString(domainPart) {
-		return "", "", fmt.Errorf("invalid domain %q", domainPart)
+	wildcard, err := validateDomain(domainPart)
+	if err != nil {
+		return "", "", false, err
+	}
+	if wildcard && basePath != "/" {
+		return "", "", false, fmt.Errorf("wildcard domains cannot include a base path")
 	}
 	if _, err := routeLocation(basePath); err != nil {
-		return "", "", fmt.Errorf("invalid domain base path: %w", err)
+		return "", "", false, fmt.Errorf("invalid domain base path: %w", err)
 	}
 
 	var appLocations string
@@ -192,20 +206,20 @@ func renderNginxConfig(domain string, targets []RouteTarget, whitelist bool) (st
 		seen := map[string]int{}
 		for _, target := range targets {
 			if target.Port < 1 || target.Port > 65535 {
-				return "", "", fmt.Errorf("invalid port %d", target.Port)
+				return "", "", false, fmt.Errorf("invalid port %d", target.Port)
 			}
 			path := joinRoutePath(basePath, target.Path)
 			// EZDeploy owns this exact path for its webhook listener.
 			if path == "/gh-webhook" {
-				return "", "", fmt.Errorf("route /gh-webhook is reserved by EZDeploy")
+				return "", "", false, fmt.Errorf("route /gh-webhook is reserved by EZDeploy")
 			}
 			if port, exists := seen[path]; exists && port != target.Port {
-				return "", "", fmt.Errorf("route %s belongs to multiple services", path)
+				return "", "", false, fmt.Errorf("route %s belongs to multiple services", path)
 			}
 			seen[path] = target.Port
 		}
 		if len(seen) == 0 {
-			return "", "", fmt.Errorf("no routes discovered; add routes manually or disable whitelisting")
+			return "", "", false, fmt.Errorf("no routes discovered; add routes manually or disable whitelisting")
 		}
 
 		paths := make([]string, 0, len(seen))
@@ -216,7 +230,7 @@ func renderNginxConfig(domain string, targets []RouteTarget, whitelist bool) (st
 
 		blocks, err := groupedProxyBlocks(paths, seen)
 		if err != nil {
-			return "", "", err
+			return "", "", false, err
 		}
 		appLocations = strings.Join(blocks, "\n") + "\n    location / {\n        return 404;\n    }"
 	} else {
@@ -225,16 +239,38 @@ func renderNginxConfig(domain string, targets []RouteTarget, whitelist bool) (st
 			ports[target.Port] = true
 		}
 		if len(ports) != 1 {
-			return "", "", fmt.Errorf("unrestricted proxying requires exactly one service port")
+			return "", "", false, fmt.Errorf("unrestricted proxying requires exactly one service port")
 		}
 		for port := range ports {
 			if port < 1 || port > 65535 {
-				return "", "", fmt.Errorf("invalid port %d", port)
+				return "", "", false, fmt.Errorf("invalid port %d", port)
 			}
 			appLocations = proxyBlock("location "+normalizeRoutePath(basePath), port, true)
 		}
 	}
 
+	if wildcard {
+		certPath, keyPath, err := validateWildcardTLS(domainPart, tlsCert, tlsKey)
+		if err != nil {
+			return "", "", false, err
+		}
+		serverName := "~^[^.]+\\." + regexp.QuoteMeta(strings.TrimPrefix(domainPart, "*.")) + "$"
+		config := fmt.Sprintf(`server {
+    listen 80;
+    server_name %s;
+    return 301 https://$host$request_uri;
+}
+server {
+    listen 443 ssl;
+    server_name %s;
+    ssl_certificate %s;
+    ssl_certificate_key %s;
+%s
+%s
+}
+`, serverName, serverName, certPath, keyPath, appLocations, proxyBlock("location = /gh-webhook", webhookPort, false))
+		return config, domainPart, true, nil
+	}
 	config := fmt.Sprintf(`server {
     listen 80;
     server_name %s;
@@ -242,7 +278,71 @@ func renderNginxConfig(domain string, targets []RouteTarget, whitelist bool) (st
 %s
 }
 `, domainPart, appLocations, proxyBlock("location = /gh-webhook", webhookPort, false))
-	return config, domainPart, nil
+	return config, domainPart, false, nil
+}
+
+func validateDomain(domain string) (bool, error) {
+	if strings.HasPrefix(domain, "*.") {
+		base := strings.TrimPrefix(domain, "*.")
+		if strings.Contains(base, "*") || !validHostname(base) || !strings.Contains(base, ".") {
+			return false, fmt.Errorf("invalid wildcard domain %q; use one leading wildcard such as *.example.com", domain)
+		}
+		return true, nil
+	}
+	if strings.Contains(domain, "*") || !validHostname(domain) {
+		return false, fmt.Errorf("invalid domain %q", domain)
+	}
+	return false, nil
+}
+
+func validHostname(host string) bool {
+	if host == "" || len(host) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if !hostnameLabelPattern.MatchString(label) {
+			return false
+		}
+	}
+	return true
+}
+
+func validateWildcardTLS(domain, certPath, keyPath string) (string, string, error) {
+	if strings.TrimSpace(certPath) == "" || strings.TrimSpace(keyPath) == "" {
+		return "", "", fmt.Errorf("wildcard domains require --tls-cert and --tls-key")
+	}
+	paths := []*string{&certPath, &keyPath}
+	for _, path := range paths {
+		absolute, err := filepath.Abs(*path)
+		if err != nil {
+			return "", "", err
+		}
+		info, err := os.Stat(absolute)
+		if err != nil || !info.Mode().IsRegular() {
+			return "", "", fmt.Errorf("TLS path is not a regular file: %s", absolute)
+		}
+		if strings.ContainsAny(absolute, "\r\n\t ;{}\"#$\\") {
+			return "", "", fmt.Errorf("TLS path contains characters unsupported by Nginx: %s", absolute)
+		}
+		*path = absolute
+	}
+	data, err := os.ReadFile(certPath)
+	if err != nil {
+		return "", "", fmt.Errorf("read TLS certificate: %w", err)
+	}
+	block, _ := pem.Decode(data)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return "", "", fmt.Errorf("TLS certificate %s contains no certificate", certPath)
+	}
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return "", "", fmt.Errorf("parse TLS certificate: %w", err)
+	}
+	representative := "ezdeploy-check." + strings.TrimPrefix(domain, "*.")
+	if err := certificate.VerifyHostname(representative); err != nil {
+		return "", "", fmt.Errorf("certificate does not cover %s: %w", representative, err)
+	}
+	return certPath, keyPath, nil
 }
 
 func restoreNginxConfig(path string, previous []byte, existed bool) {

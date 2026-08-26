@@ -2,7 +2,7 @@
 
 EZDeploy puts a backend from Git onto a systemd-based Linux server. It connects repository updates, environment and route discovery, native or Docker execution, Nginx, HTTPS, and the existing deployment registry.
 
-Running `ezdeploy` without a command opens the terminal UI.
+Running `ezdeploy` without a command opens a project-first terminal dashboard. Projects are sorted by name and show status, domain, service count, and current revision. Selecting one opens its overview, redeploy, releases, logs, network, service controls, and removal; host installation, OS details, and metrics live under System.
 
 ## Setup
 
@@ -38,6 +38,12 @@ sudo /opt/ezdeploy/ezdeploy redeploy https://github.com/example/backend
 
 Redeploy requires an existing registry record. It pulls the registered branch, reuses the saved runtime, services, ports, domain and start commands, then rescans routes and every registered service's environment variables before rebuilding and restarting. Existing `.env` values are preserved; newly discovered keys are requested interactively or rejected with `--non-interactive`. The normal deployment rollback protects the previous release if any service fails.
 
+Redeploy accepts the registered name or repository URL:
+
+```bash
+sudo ezdeploy redeploy backend
+```
+
 | Option | Purpose |
 | --- | --- |
 | `--branch <name>` | Select a Git branch. |
@@ -51,6 +57,8 @@ Redeploy requires an existing registry record. It pulls the registered branch, r
 | `--dockerfile <path>` | Select the production Dockerfile. |
 | `--docker-context <path>` | Set its repository-relative build context. |
 | `--container-port <number>` | Set the internal application port. |
+| `--tls-cert <path>` | Use an existing certificate for a wildcard domain. |
+| `--tls-key <path>` | Use its existing private key. |
 | `--allow-route <path>` | Add an undiscovered route; repeatable. |
 | `--no-route-whitelist` | Proxy every application path. |
 | `--non-interactive` | Reuse saved values and fail instead of prompting. |
@@ -84,11 +92,11 @@ sudo ezdeploy deploy git@github.com:example/private-backend.git \
   --ssh-key /home/ubuntu/.ssh/backend_deploy
 ```
 
-The key is passed to Git for that process only and is not copied or registered. Supply it again during a private redeploy. SSH provides the remote control channel without exposing another API:
+The key is passed to Git for that process only and is never copied. Its server-side path is registered so later redeploys can reuse it; the key material is not stored in `registry.json`. SSH provides the remote control channel without exposing another API:
 
 ```bash
 ssh -i ~/.ssh/ec2.pem ubuntu@server \
-  'sudo /opt/ezdeploy/ezdeploy redeploy git@github.com:example/private-backend.git --ssh-key /home/ubuntu/.ssh/backend_deploy --non-interactive'
+  'sudo /opt/ezdeploy/ezdeploy redeploy private-backend --non-interactive'
 ```
 
 Git updates use `merge --ff-only`; server divergence is rejected rather than overwritten. Non-interactive deployment also stops when a newly discovered environment variable has no saved value.
@@ -101,6 +109,44 @@ The same walker lists Python, Go, and Node backend candidates in mixed-language 
 
 Existing `.env` values are preserved at mode `0600`. Native applications run as `SUDO_USER`, not root. Go applications rebuild on update; conventional commands are detected for Go, `npm start`, and FastAPI `main:app`.
 
+## Releases and rollback
+
+EZDeploy retains the latest 20 successful deploy, redeploy, and rollback events. Each record contains a release ID, Git revision, time, and operation. A matching `refs/ezdeploy/releases/<release-id>` reference prevents Git garbage collection from deleting its commit.
+
+```bash
+ezdeploy releases backend
+sudo ezdeploy rollback backend --release 20260825T120000Z-a1b2c3d4
+```
+
+Rollback checks out the saved revision without pulling, rescans routes and environment requirements, rebuilds every registered service, regenerates Nginx, and runs the normal startup checks. Current `.env` files remain untouched. The confirmation warns that database schema and data are not rolled back. A failed rollback restores the exact previous attached branch or detached HEAD, services, containers, Nginx files, and registry state.
+
+Legacy registry entries gain a release for their current revision when their next deployment succeeds.
+
+## Logs and network diagnostics
+
+```bash
+sudo ezdeploy logs backend --source deployment --lines 100
+sudo ezdeploy logs backend --source runtime --service api --lines 100 --follow
+ezdeploy network backend
+```
+
+Deployment summaries go to journald under `ezdeploy`; they contain only project, operation, and result, never environment values, credentials, private keys, or user command arguments. Runtime output is read from each service's systemd journal or Docker container. A multi-service project requires `--service` for runtime logs.
+
+Network diagnostics query EC2 IMDSv2 with a short timeout and compare its public IPv4 address with DNS. A mismatch prints the existing A records and the exact address to use, with no redeploy required. If metadata is unavailable, EZDeploy does not call an external IP service. An Elastic IP is the stable fix: an EC2 reboot retains the public address, while stop/start normally changes it ([AWS instance lifecycle](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-instance-lifecycle.html)).
+
+## Wildcard domains
+
+Only a single leading wildcard such as `*.example.com` is accepted. EZDeploy generates Nginx server-name matching for exactly one child label and expects the wildcard A record to point at the instance.
+
+```bash
+sudo ezdeploy deploy https://github.com/example/backend \
+  --domain '*.example.com' \
+  --tls-cert /etc/letsencrypt/live/example.com/fullchain.pem \
+  --tls-key /etc/letsencrypt/live/example.com/privkey.pem
+```
+
+Wildcard projects require existing certificate and key paths. EZDeploy verifies that the certificate covers a representative child hostname, persists only the paths, and lets `nginx -t` validate certificate/key loading. It renders explicit HTTP-to-HTTPS and TLS blocks and does not attempt automatic issuance because wildcard certificates require DNS validation ([Certbot documentation](https://eff-certbot.readthedocs.io/_/downloads/en/stable/pdf/)). Ordinary domains keep the existing Certbot flow.
+
 ## Current boundaries
 
 - Nginx + Certbot is the implemented ingress; Traefik and cloud ingress are later providers.
@@ -108,6 +154,7 @@ Existing `.env` values are preserved at mode `0600`. Native applications run as 
 - Rollback restores Git revisions and EZDeploy-managed units, Nginx files, containers, and registry records; it does not restore external databases or other application state.
 - Route discovery is literal. Multi-service unrestricted proxying is intentionally rejected because one catch-all Nginx location cannot choose between several service ports.
 - The terminal metrics view is local; a managed observability provider has not been selected or integrated.
+- Fresh-instance migration, state backup, and automatic Route 53 mutation are not implemented. A fresh host still starts with installation and deployment.
 - Installation and binary upgrades are not packaged; keep the binary and `yamls` together.
 - Builds execute trusted repository content. Do not deploy an untrusted repository as an administrator.
 
@@ -119,4 +166,4 @@ go vet ./...
 go test -race ./...
 ```
 
-Tests cover Git fast-forward updates, environment preservation, mixed Python/Go/Node service discovery, Dockerfile discovery and path containment, loopback-only Docker arguments, runtime selection, route-to-Nginx generation, real Nginx parsing when available, and non-root systemd rendering.
+Tests cover Git fast-forward updates, release retention and refs, attached/detached restoration, environment preservation, dashboard ordering and navigation, log providers, EC2/DNS outcomes, wildcard TLS rendering, mixed Python/Go/Node service discovery, Dockerfile discovery and path containment, loopback-only Docker arguments, runtime selection, route-to-Nginx generation, real Nginx parsing when available, and non-root systemd rendering.

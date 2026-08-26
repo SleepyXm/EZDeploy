@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -20,17 +21,27 @@ type fileState struct {
 
 // DeploymentRollback captures the project state that one deploy invocation may mutate.
 type DeploymentRollback struct {
-	projectName, projectPath, revision string
-	previous                           Project
-	nginx                              fileState
-	files                              map[string]fileState
-	units                              map[string]bool
-	hadPath, hadLink                   bool
-	docker                             bool
+	projectName, projectPath string
+	gitState                 GitState
+	previous                 Project
+	nginx                    fileState
+	files                    map[string]fileState
+	units                    map[string]bool
+	hadPath, hadLink         bool
+	docker                   bool
+	dockerExisted            bool
+	dockerWasRunning         bool
 }
 
 // TrackDocker marks a replacement container for removal during rollback.
 func (r *DeploymentRollback) TrackDocker() { r.docker = true }
+
+// Commit discards the Docker backup only after the complete deployment transaction succeeds.
+func (r *DeploymentRollback) Commit() {
+	if r.docker && r.dockerExisted {
+		_ = Run("", "docker", "rm", ManagedName(r.projectName)+"-previous")
+	}
+}
 
 // BeginDeploymentRollback snapshots code, registry metadata, Nginx, and existing units.
 func BeginDeploymentRollback(projectName, projectPath string) (*DeploymentRollback, error) {
@@ -44,6 +55,12 @@ func BeginDeploymentRollback(projectName, projectPath string) (*DeploymentRollba
 		return nil, err
 	}
 	r.previous = reg[projectName]
+	if r.previous.Runtime == "docker" {
+		r.dockerExisted, r.dockerWasRunning, err = dockerContainerState(ManagedName(projectName))
+		if err != nil {
+			return nil, err
+		}
+	}
 	if err := r.TrackFile(registryPath); err != nil {
 		return nil, err
 	}
@@ -61,7 +78,7 @@ func BeginDeploymentRollback(projectName, projectPath string) (*DeploymentRollba
 			return nil, fmt.Errorf("project path is not a directory: %s", absPath)
 		}
 		r.hadPath = true
-		r.revision, err = CurrentRevision(absPath)
+		r.gitState, err = CurrentGitState(absPath)
 		if err != nil {
 			return nil, fmt.Errorf("snapshot %s revision: %w", projectName, err)
 		}
@@ -80,7 +97,9 @@ func BeginDeploymentRollback(projectName, projectPath string) (*DeploymentRollba
 
 // TrackUnit makes units created or replaced during deployment reversible.
 func (r *DeploymentRollback) TrackUnit(unitName string) error {
-	r.units[unitName] = true
+	if _, tracked := r.units[unitName]; !tracked {
+		r.units[unitName] = exec.Command("systemctl", "is-active", "--quiet", unitName).Run() == nil
+	}
 	return r.TrackFile(filepath.Join(SystemdDir, unitName+".service"))
 }
 
@@ -103,6 +122,7 @@ func (r *DeploymentRollback) TrackFile(path string) error {
 // Restore returns one project to the code, units, Nginx, and registry state from before deployment.
 func (r *DeploymentRollback) Restore() error {
 	var failures []error
+	dockerRestored := false
 	add := func(err error) {
 		if err != nil {
 			failures = append(failures, err)
@@ -113,12 +133,24 @@ func (r *DeploymentRollback) Restore() error {
 	}
 	if r.docker {
 		_ = Run("", "docker", "rm", "--force", ManagedName(r.projectName))
+		if r.dockerExisted {
+			backup, name := ManagedName(r.projectName)+"-previous", ManagedName(r.projectName)
+			if exists, _, err := dockerContainerState(backup); err != nil {
+				add(err)
+			} else if exists {
+				if err := Run("", "docker", "rename", backup, name); err != nil {
+					add(err)
+				} else {
+					dockerRestored = true
+					if r.dockerWasRunning {
+						add(Run("", "docker", "start", name))
+					}
+				}
+			}
+		}
 	}
 	if r.hadPath {
-		if r.previous.Branch != "" {
-			add(Run(r.projectPath, "git", "checkout", r.previous.Branch))
-		}
-		add(Run(r.projectPath, "git", "reset", "--hard", r.revision))
+		add(RestoreGitState(r.projectPath, r.gitState))
 	} else {
 		add(os.RemoveAll(r.projectPath))
 	}
@@ -137,20 +169,20 @@ func (r *DeploymentRollback) Restore() error {
 		add(err)
 	}
 	_ = Run("", "systemctl", "daemon-reload")
-	for _, service := range r.previous.ManagedServices(r.projectName) {
-		if service.Unit != "" {
-			if err := Run("", "systemctl", "restart", service.Unit); err != nil {
-				add(err)
-			}
+	for unit, wasActive := range r.units {
+		if wasActive {
+			add(Run("", "systemctl", "start", unit))
 		}
 	}
-	if r.previous.Runtime == "docker" {
+	if r.previous.Runtime == "docker" && r.dockerExisted && !dockerRestored {
 		if err := DeployDocker(DockerDeployment{
 			ProjectName: r.projectName, ProjectPath: r.projectPath,
 			Dockerfile: r.previous.Dockerfile, BuildContext: r.previous.DockerContext,
 			HostPort: r.previous.Port, ContainerPort: r.previous.ContainerPort,
 		}); err != nil {
 			add(err)
+		} else if !r.dockerWasRunning {
+			add(DockerAction(r.projectName, "stop"))
 		}
 	}
 	if r.nginx.exists {

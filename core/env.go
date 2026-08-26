@@ -134,6 +134,29 @@ func SetupEnv(projectPath string, interactive, allowManualAdditions bool) error 
 	return nil
 }
 
+// ValidateEnv checks rollback requirements without changing the current environment file.
+func ValidateEnv(projectPath string) error {
+	existing, err := os.ReadFile(filepath.Join(projectPath, ".env"))
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	report, err := walker.ScanDefault(projectPath)
+	if err != nil {
+		return fmt.Errorf("environment discovery: %w", err)
+	}
+	configured, missing := parseEnvKeys(existing), []string{}
+	for _, key := range report.UniqueEnvNames() {
+		if !configured[key] {
+			missing = append(missing, key)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("rollback requires missing environment values for %s; current .env was not changed", strings.Join(missing, ", "))
+	}
+	fmt.Println("[✓] Environment validated without changes")
+	return nil
+}
+
 func parseEnvKeys(data []byte) map[string]bool {
 	keys := map[string]bool{}
 	for _, line := range strings.Split(string(data), "\n") {

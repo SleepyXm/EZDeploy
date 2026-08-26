@@ -15,6 +15,7 @@ type DockerDeployment struct {
 	BuildContext  string
 	HostPort      int
 	ContainerPort int
+	KeepPrevious  bool // the outer transaction removes the backup only after Nginx and registry succeed
 }
 
 // DeployDocker builds before touching the running container, then keeps the
@@ -41,7 +42,7 @@ func DeployDocker(deployment DockerDeployment) error {
 		return fmt.Errorf("docker build: %w", err)
 	}
 
-	oldExists, _, err := dockerContainerState(containerName)
+	oldExists, oldRunning, err := dockerContainerState(containerName)
 	if err != nil {
 		return err
 	}
@@ -65,18 +66,18 @@ func DeployDocker(deployment DockerDeployment) error {
 
 	runArgs := dockerRunArgs(deployment, containerName, imageName)
 	if err := Run("", "docker", runArgs...); err != nil {
-		restoreDockerContainer(containerName, backupName, oldExists)
+		restoreDockerContainer(containerName, backupName, oldExists, oldRunning)
 		return fmt.Errorf("docker run: %w", err)
 	}
 	_, running, err := dockerContainerState(containerName)
 	if err != nil || !running {
-		restoreDockerContainer(containerName, backupName, oldExists)
+		restoreDockerContainer(containerName, backupName, oldExists, oldRunning)
 		if err != nil {
 			return err
 		}
 		return fmt.Errorf("Docker container %s stopped during startup", containerName)
 	}
-	if oldExists {
+	if oldExists && !deployment.KeepPrevious {
 		_ = Run("", "docker", "rm", backupName)
 	}
 	fmt.Printf("[✓] Docker container %s is running on 127.0.0.1:%d\n", containerName, deployment.HostPort)
@@ -149,11 +150,13 @@ func dockerContainerState(name string) (bool, bool, error) {
 	return false, false, fmt.Errorf("inspect Docker container %s: %w: %s", name, err, strings.TrimSpace(string(output)))
 }
 
-func restoreDockerContainer(name, backup string, hadBackup bool) {
+func restoreDockerContainer(name, backup string, hadBackup, wasRunning bool) {
 	_ = Run("", "docker", "rm", "--force", name)
 	if hadBackup {
 		_ = Run("", "docker", "rename", backup, name)
-		_ = Run("", "docker", "start", name)
+		if wasRunning {
+			_ = Run("", "docker", "start", name)
+		}
 	}
 }
 

@@ -15,6 +15,7 @@ const CloneDir = "./projects"
 var (
 	projectNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 	serviceNamePattern = regexp.MustCompile(`[^a-z0-9.-]+`)
+	releaseIDPattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 )
 
 // ManagedName is the canonical systemd and Docker container name.
@@ -141,6 +142,67 @@ func CurrentBranch(projectPath string) (string, error) {
 		return "", fmt.Errorf("repository has no active branch")
 	}
 	return branch, nil
+}
+
+// GitState preserves whether HEAD was attached, not merely the commit it named.
+type GitState struct{ Revision, Branch string }
+
+func CurrentGitState(projectPath string) (GitState, error) {
+	revision, err := CurrentRevision(projectPath)
+	if err != nil {
+		return GitState{}, err
+	}
+	branch, _ := gitOutput(projectPath, "symbolic-ref", "--short", "-q", "HEAD")
+	return GitState{Revision: revision, Branch: branch}, nil
+}
+
+func RestoreGitState(projectPath string, state GitState) error {
+	if state.Branch != "" {
+		if err := Run(projectPath, "git", "checkout", state.Branch); err != nil {
+			return err
+		}
+	} else if err := Run(projectPath, "git", "checkout", "--detach", state.Revision); err != nil {
+		return err
+	}
+	return Run(projectPath, "git", "reset", "--hard", state.Revision)
+}
+
+func releaseRef(id string) (string, error) {
+	if !releaseIDPattern.MatchString(id) {
+		return "", fmt.Errorf("invalid release ID %q", id)
+	}
+	return "refs/ezdeploy/releases/" + id, nil
+}
+
+func CreateReleaseRef(projectPath, id, revision string) error {
+	ref, err := releaseRef(id)
+	if err != nil {
+		return err
+	}
+	if err := Run(projectPath, "git", "update-ref", ref, revision); err != nil {
+		return fmt.Errorf("preserve release %s: %w", id, err)
+	}
+	return nil
+}
+
+func DeleteReleaseRef(projectPath, id string) error {
+	ref, err := releaseRef(id)
+	if err != nil {
+		return err
+	}
+	return Run(projectPath, "git", "update-ref", "-d", ref)
+}
+
+func CheckoutRelease(projectPath string, release Release) error {
+	ref, err := releaseRef(release.ID)
+	if err != nil {
+		return err
+	}
+	resolved, err := gitOutput(projectPath, "rev-parse", ref)
+	if err != nil || resolved != release.Revision {
+		return fmt.Errorf("release %s Git reference is missing or inconsistent", release.ID)
+	}
+	return Run(projectPath, "git", "checkout", "--detach", ref)
 }
 
 // CurrentRevision identifies the repository release stored in the registry.

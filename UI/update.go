@@ -1,143 +1,211 @@
 package UI
 
 import (
-	"fmt"
-
 	tea "github.com/charmbracelet/bubbletea"
+
+	"EZDeploy/core"
 )
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	keyMsg, ok := msg.(tea.KeyMsg)
+	if done, ok := msg.(commandDoneMsg); ok {
+		m.refresh()
+		m.lastOK = done.err == nil
+		if done.err != nil {
+			m.lastMsg = done.err.Error()
+		} else {
+			m.lastMsg = "Command completed"
+		}
+		return m, nil
+	}
+	key, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return m, nil
 	}
-	if keyMsg.String() == "ctrl+c" {
+	if key.String() == "ctrl+c" || key.String() == "q" && m.view == viewProjects {
 		m.quitting = true
 		return m, tea.Quit
 	}
+	if key.String() == "esc" {
+		return m.back(), nil
+	}
 	switch m.view {
-	case viewList:
-		return m.updateList(keyMsg)
-	case viewInput:
-		return m.updateInput(keyMsg)
+	case viewProjects:
+		return m.updateProjects(key)
+	case viewProject:
+		return m.updateProject(key)
+	case viewReleases:
+		return m.updateReleases(key)
+	case viewLogs:
+		return m.updateLogs(key)
+	case viewNetwork:
+		if key.String() == "r" {
+			m.network = core.NetworkDiagnostics(m.project())
+		}
+	case viewSystem:
+		return m.updateSystem(key)
+	case viewInstall:
+		return m.updateInstall(key)
 	case viewConfirm:
-		return m.updateConfirm(keyMsg)
-	case viewResult:
-		return m.updateResult(keyMsg)
+		return m.updateConfirm(key)
 	}
 	return m, nil
 }
 
-func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "q":
-		m.quitting = true
-		return m, tea.Quit
+func (m Model) updateProjects(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	m.move(key, len(m.projects)+1)
+	if key.String() != "enter" {
+		return m, nil
+	}
+	if m.cursor == len(m.projects) {
+		m.view, m.cursor = viewSystem, 0
+	} else {
+		m.selected, m.view, m.cursor = m.projects[m.cursor], viewProject, 0
+	}
+	return m, nil
+}
+
+func (m Model) updateProject(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	m.move(key, len(projectActions))
+	if key.String() != "enter" {
+		return m, nil
+	}
+	switch m.cursor {
+	case 0:
+		m.view = viewOverview
+	case 1:
+		return m, m.external("redeploy", m.project().RepoURL)
+	case 2:
+		m.view, m.cursor = viewReleases, 0
+	case 3:
+		m.view, m.cursor = viewLogs, 0
+	case 4:
+		m.network, m.view = core.NetworkDiagnostics(m.project()), viewNetwork
+	case 5, 6, 7:
+		action := []string{"start", "stop", "restart"}[m.cursor-5]
+		return m, m.external("__service", action, m.selected)
+	case 8:
+		m.confirm, m.view = "remove", viewConfirm
+	case 9:
+		return m.back(), nil
+	}
+	return m, nil
+}
+
+func (m Model) updateReleases(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	releases := m.project().Releases
+	m.move(key, len(releases)+1)
+	if key.String() != "enter" {
+		return m, nil
+	}
+	if m.cursor == len(releases) {
+		return m.back(), nil
+	}
+	m.releaseID = releases[len(releases)-1-m.cursor].ID
+	m.confirm, m.view = "rollback", viewConfirm
+	return m, nil
+}
+
+func (m Model) updateLogs(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	managed := m.project().ManagedServices(m.selected)
+	m.move(key, len(managed)+2)
+	if key.String() != "enter" && key.String() != "f" {
+		return m, nil
+	}
+	if m.cursor == len(managed)+1 {
+		return m.back(), nil
+	}
+	args := []string{"logs", m.selected, "--source", "deployment", "--lines", "100"}
+	if m.cursor > 0 {
+		args = []string{"logs", m.selected, "--source", "runtime", "--service", managed[m.cursor-1].Name, "--lines", "100"}
+	}
+	if key.String() == "f" {
+		args = append(args, "--follow")
+	}
+	return m, m.external(args...)
+}
+
+func (m Model) updateSystem(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	m.move(key, 3)
+	if key.String() != "enter" {
+		return m, nil
+	}
+	switch m.cursor {
+	case 0:
+		m.view, m.cursor, m.chosen = viewInstall, 0, map[int]bool{}
+	case 1:
+		return m, m.external("__metrics")
+	default:
+		return m.back(), nil
+	}
+	return m, nil
+}
+
+func (m Model) updateConfirm(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if key.String() != "enter" {
+		return m, nil
+	}
+	if m.confirm == "rollback" {
+		m.view, m.confirm = viewReleases, ""
+		return m, m.external("rollback", m.selected, "--release", m.releaseID, "--yes")
+	}
+	name := m.selected
+	m.view, m.selected, m.cursor, m.confirm = viewProjects, "", 0, ""
+	return m, m.external("__remove", name)
+}
+
+func (m Model) updateInstall(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	m.move(key, len(installItems))
+	switch key.String() {
+	case " ":
+		m.chosen[m.cursor] = !m.chosen[m.cursor]
+	case "enter":
+		args := []string{"__system-install"}
+		for index, item := range installItems {
+			if m.chosen[index] {
+				args = append(args, item)
+			}
+		}
+		if len(args) == 1 {
+			m.lastOK, m.lastMsg = false, "Select at least one component"
+			return m, nil
+		}
+		return m, m.external(args...)
+	}
+	return m, nil
+}
+
+func (m *Model) move(key tea.KeyMsg, count int) {
+	if count == 0 {
+		m.cursor = 0
+		return
+	}
+	switch key.String() {
 	case "up", "k":
 		if m.cursor > 0 {
 			m.cursor--
 		}
 	case "down", "j":
-		if m.cursor < len(m.entries)-1 {
+		if m.cursor < count-1 {
 			m.cursor++
 		}
-	case "r":
-		for i := range m.entries {
-			status, detail := m.entries[i].tool.Validate()
-			m.entries[i].status = status
-			m.entries[i].detail = detail
-		}
-	case "enter":
-		sel := m.entries[m.cursor]
-		if sel.status == StatusInvalid {
-			m.lastOK = false
-			m.lastMsg = fmt.Sprintf("%s skipped: %s", sel.tool.Name, sel.detail)
-			return m, nil
-		}
-		if sel.tool.RequiresProject && m.project == "" {
-			m.lastOK = false
-			m.lastMsg = fmt.Sprintf("%s locked: deploy a project first", sel.tool.Name)
-			return m, nil
-		}
-		m.startTool(sel.tool)
 	}
-	return m, nil
 }
 
-func (m Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	f := m.pendingFlds[m.fieldIdx]
-	if f.Kind == FieldMultiSelect {
-		return m.updateMultiSelect(msg, f)
-	}
-
-	switch msg.String() {
-	case "esc":
-		m.retreatField()
-		return m, nil
-	case "enter":
-		m.advanceField()
-		return m, nil
-	}
-	var cmd tea.Cmd
-	m.input, cmd = m.input.Update(msg)
-	return m, cmd
-}
-
-func (m Model) updateMultiSelect(msg tea.KeyMsg, f Field) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "esc":
-		m.retreatField()
-		return m, nil
-	case "up", "k":
-		if m.msCursor > 0 {
-			m.msCursor--
-		}
-	case "down", "j":
-		if m.msCursor < len(f.Options)-1 {
-			m.msCursor++
-		}
-	case " ":
-		m.msSelected[m.msCursor] = !m.msSelected[m.msCursor]
-	case "enter":
-		m.advanceField()
-	}
-	return m, nil
-}
-
-func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "esc":
-		if len(m.pendingFlds) > 0 {
-			m.fieldIdx = len(m.pendingFlds) - 1
-			m.input.SetValue(m.collected[m.pendingFlds[m.fieldIdx].Key])
-			m.input.Placeholder = m.pendingFlds[m.fieldIdx].Placeholder
-			m.view = viewInput
+func (m Model) back() Model {
+	m.cursor, m.confirm = 0, ""
+	switch m.view {
+	case viewProject, viewSystem:
+		m.view, m.selected = viewProjects, ""
+	case viewOverview, viewReleases, viewLogs, viewNetwork:
+		m.view = viewProject
+	case viewInstall:
+		m.view = viewSystem
+	case viewConfirm:
+		if m.confirm == "rollback" {
+			m.view = viewReleases
 		} else {
-			m.view = viewList
-			m.activeTool = nil
-		}
-		return m, nil
-	case "enter":
-		m.runActiveTool()
-		return m, nil
-	}
-	return m, nil
-}
-
-func (m Model) updateResult(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "q":
-		m.quitting = true
-		return m, tea.Quit
-	case "enter", "esc":
-		m.activeTool = nil
-		m.view = viewList
-		// refresh validity since on-disk state (e.g. registry.json) may have changed
-		for i := range m.entries {
-			status, detail := m.entries[i].tool.Validate()
-			m.entries[i].status = status
-			m.entries[i].detail = detail
+			m.view = viewProject
 		}
 	}
-	return m, nil
+	return m
 }
