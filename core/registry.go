@@ -34,8 +34,7 @@ type Project struct {
 	ServiceRuntime string    `json:"service_runtime,omitempty"`
 	Revision       string    `json:"revision,omitempty"`
 	Services       []Service `json:"services,omitempty"`
-	SigningKey     string    `json:"signing_key,omitempty"` // Ed25519 private key seed (base64) — never logged
-	SSHKey         string    `json:"ssh_key,omitempty"`     // path to SSH private key for private repos
+	SSHKey         string    `json:"ssh_key,omitempty"` // path to SSH private key for private repos
 	TLSCert        string    `json:"tls_cert,omitempty"`
 	TLSKey         string    `json:"tls_key,omitempty"`
 	Releases       []Release `json:"releases,omitempty"`

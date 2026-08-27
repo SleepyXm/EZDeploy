@@ -243,6 +243,9 @@ def login(): pass`,
 	if strings.Contains(nginx, "location = /api {") {
 		t.Fatal("shared /api policy boundary became an undiscovered proxy endpoint")
 	}
+	if strings.Contains(nginx, "/gh-webhook") {
+		t.Fatal("generated nginx config still exposes the removed GitHub webhook")
+	}
 	if nginxBinary, err := exec.LookPath("nginx"); err == nil {
 		nginxRoot := t.TempDir()
 		fullConfig := "pid " + filepath.Join(nginxRoot, "nginx.pid") + ";\nerror_log stderr;\nevents {}\nhttp {\n" + nginx + "}\n"

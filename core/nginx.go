@@ -14,7 +14,6 @@ import (
 const (
 	nginxSitesAvailable = "/etc/nginx/sites-available"
 	nginxSitesEnabled   = "/etc/nginx/sites-enabled"
-	webhookPort         = 9001
 )
 
 var hostnameLabelPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$`)
@@ -209,10 +208,6 @@ func renderNginxConfigWithTLS(domain string, targets []RouteTarget, whitelist bo
 				return "", "", false, fmt.Errorf("invalid port %d", target.Port)
 			}
 			path := joinRoutePath(basePath, target.Path)
-			// EZDeploy owns this exact path for its webhook listener.
-			if path == "/gh-webhook" {
-				return "", "", false, fmt.Errorf("route /gh-webhook is reserved by EZDeploy")
-			}
 			if port, exists := seen[path]; exists && port != target.Port {
 				return "", "", false, fmt.Errorf("route %s belongs to multiple services", path)
 			}
@@ -266,18 +261,16 @@ server {
     ssl_certificate %s;
     ssl_certificate_key %s;
 %s
-%s
 }
-`, serverName, serverName, certPath, keyPath, appLocations, proxyBlock("location = /gh-webhook", webhookPort, false))
+`, serverName, serverName, certPath, keyPath, appLocations)
 		return config, domainPart, true, nil
 	}
 	config := fmt.Sprintf(`server {
     listen 80;
     server_name %s;
 %s
-%s
 }
-`, domainPart, appLocations, proxyBlock("location = /gh-webhook", webhookPort, false))
+`, domainPart, appLocations)
 	return config, domainPart, false, nil
 }
 

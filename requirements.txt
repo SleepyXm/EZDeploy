@@ -1,6 +1,0 @@
-FastAPI
-uvicorn
-httpx
-pytest
-anthropic
-openai

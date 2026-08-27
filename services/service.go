@@ -184,12 +184,25 @@ func ActivateProject(projectName, projectPath string, previous core.Project, doc
 		if err := core.Run("", "systemctl", "restart", service.Unit); err != nil {
 			return err
 		}
-		if err := core.WaitForSystemdActive(service.Unit, 5*time.Second); err != nil {
+		if err := waitForSystemdActive(service.Unit, 5*time.Second); err != nil {
 			return fmt.Errorf("service %s failed to start: %w", service.Name, err)
 		}
 	}
 	return nil
 }
+
+// waitForSystemdActive confirms that a restarted unit stays active before deployment continues.
+func waitForSystemdActive(serviceName string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if err := core.Run("", "systemctl", "is-active", "--quiet", serviceName); err == nil {
+			return nil
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return core.Run("", "systemctl", "is-active", "--quiet", serviceName)
+}
+
 func control(managed []core.Service, actionName string) error {
 	for _, service := range managed {
 		if service.Unit == "" {
