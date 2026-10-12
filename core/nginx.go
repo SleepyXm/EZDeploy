@@ -20,23 +20,64 @@ var hostnameLabelPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}
 
 // RouteTarget binds one discovered route to the service port that owns it.
 type RouteTarget struct {
-	Path string
-	Port int
+	Path  string
+	Port  int
+	Proxy *ProxyRoute
 }
 
-// proxyPolicy is inherited by allowlisted child locations; only proxy_pass varies per route.
-func proxyPolicy(indent string, streaming bool) string {
+type ProxyRoute struct {
+	Path        string `json:"path"`
+	Streaming   bool   `json:"streaming"`
+	WebSocket   bool   `json:"websocket"`
+	ReadTimeout int    `json:"read_timeout"`
+}
+
+func ApplyProxyRoutes(targets []RouteTarget, routes []ProxyRoute) error {
+	if len(routes) > 64 {
+		return fmt.Errorf("at most 64 route overrides are supported")
+	}
+	seen := map[string]bool{}
+	for i, route := range routes {
+		if seen[route.Path] || route.ReadTimeout < 1 || route.ReadTimeout > 3600 {
+			return fmt.Errorf("invalid proxy settings for %s", route.Path)
+		}
+		seen[route.Path] = true
+		found := false
+		for j := range targets {
+			if targets[j].Path == route.Path {
+				targets[j].Proxy = &routes[i]
+				found = true
+			}
+		}
+		if !found {
+			return fmt.Errorf("proxy route %s is no longer in the selected services; review the route settings", route.Path)
+		}
+	}
+	return nil
+}
+
+// Child locations inherit defaults unless a route has explicit proxy settings.
+func proxyPolicy(indent string, policy *ProxyRoute) string {
 	lines := []string{"proxy_http_version 1.1;", "proxy_set_header Host $host;", "proxy_set_header X-Real-IP $remote_addr;",
 		"proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;", "proxy_set_header X-Forwarded-Proto $scheme;"}
-	if streaming {
-		lines = append(lines, "proxy_set_header Upgrade $http_upgrade;", "proxy_set_header Connection 'upgrade';",
-			"proxy_cache_bypass $http_upgrade;", "proxy_buffering off;")
+	if policy == nil || policy.WebSocket {
+		lines = append(lines, "proxy_set_header Upgrade $http_upgrade;", "proxy_set_header Connection 'upgrade';", "proxy_cache_bypass $http_upgrade;")
+	} else {
+		lines = append(lines, "proxy_set_header Upgrade '';", "proxy_set_header Connection '';")
+	}
+	if policy == nil || policy.Streaming {
+		lines = append(lines, "proxy_buffering off;")
+	} else {
+		lines = append(lines, "proxy_buffering on;")
+	}
+	if policy != nil {
+		lines = append(lines, fmt.Sprintf("proxy_read_timeout %ds;", policy.ReadTimeout))
 	}
 	return indent + strings.Join(lines, "\n"+indent)
 }
 
-func proxyBlock(location string, port int, streaming bool) string {
-	return fmt.Sprintf("    %s {\n        proxy_pass http://127.0.0.1:%d;\n%s\n    }", location, port, proxyPolicy("        ", streaming))
+func proxyBlock(location string, port int, policy *ProxyRoute) string {
+	return fmt.Sprintf("    %s {\n        proxy_pass http://127.0.0.1:%d;\n%s\n    }", location, port, proxyPolicy("        ", policy))
 }
 
 func routeLocation(path string) (string, error) {
@@ -93,7 +134,7 @@ func routeRoot(path string) string {
 	return "/" + segment
 }
 
-func groupedProxyBlocks(paths []string, ports map[string]int) ([]string, error) {
+func groupedProxyBlocks(paths []string, ports map[string]int, policies map[string]*ProxyRoute) ([]string, error) {
 	groups, blocks := map[string][]string{}, []string{}
 	for _, path := range paths {
 		root := routeRoot(path)
@@ -102,7 +143,7 @@ func groupedProxyBlocks(paths []string, ports map[string]int) ([]string, error) 
 			if err != nil {
 				return nil, err
 			}
-			blocks = append(blocks, proxyBlock(location, ports[path], true))
+			blocks = append(blocks, proxyBlock(location, ports[path], policies[path]))
 			continue
 		}
 		groups[root] = append(groups[root], path)
@@ -119,11 +160,15 @@ func groupedProxyBlocks(paths []string, ports map[string]int) ([]string, error) 
 			if err != nil {
 				return nil, err
 			}
-			children = append(children, fmt.Sprintf("        %s {\n            proxy_pass http://127.0.0.1:%d;\n        }", location, ports[path]))
+			policy := ""
+			if policies[path] != nil {
+				policy = "\n" + proxyPolicy("            ", policies[path])
+			}
+			children = append(children, fmt.Sprintf("        %s {\n            proxy_pass http://127.0.0.1:%d;%s\n        }", location, ports[path], policy))
 		}
 		// The parent supplies shared headers but rejects every undiscovered child.
 		blocks = append(blocks, fmt.Sprintf("    location %s/ {\n%s\n%s\n        return 404;\n    }", root,
-			proxyPolicy("        ", true), strings.Join(children, "\n")))
+			proxyPolicy("        ", nil), strings.Join(children, "\n")))
 	}
 	return blocks, nil
 }
@@ -203,6 +248,7 @@ func renderNginxConfigWithTLS(domain string, targets []RouteTarget, whitelist bo
 	var appLocations string
 	if whitelist {
 		seen := map[string]int{}
+		policies := map[string]*ProxyRoute{}
 		for _, target := range targets {
 			if target.Port < 1 || target.Port > 65535 {
 				return "", "", false, fmt.Errorf("invalid port %d", target.Port)
@@ -212,6 +258,7 @@ func renderNginxConfigWithTLS(domain string, targets []RouteTarget, whitelist bo
 				return "", "", false, fmt.Errorf("route %s belongs to multiple services", path)
 			}
 			seen[path] = target.Port
+			policies[path] = target.Proxy
 		}
 		if len(seen) == 0 {
 			return "", "", false, fmt.Errorf("no routes discovered; add routes manually or disable whitelisting")
@@ -223,7 +270,7 @@ func renderNginxConfigWithTLS(domain string, targets []RouteTarget, whitelist bo
 		}
 		sort.Strings(paths)
 
-		blocks, err := groupedProxyBlocks(paths, seen)
+		blocks, err := groupedProxyBlocks(paths, seen, policies)
 		if err != nil {
 			return "", "", false, err
 		}
@@ -240,7 +287,7 @@ func renderNginxConfigWithTLS(domain string, targets []RouteTarget, whitelist bo
 			if port < 1 || port > 65535 {
 				return "", "", false, fmt.Errorf("invalid port %d", port)
 			}
-			appLocations = proxyBlock("location "+normalizeRoutePath(basePath), port, true)
+			appLocations = proxyBlock("location "+normalizeRoutePath(basePath), port, nil)
 		}
 	}
 

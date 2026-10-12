@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -216,6 +217,9 @@ def login(): pass`,
 		}
 		targets = append(targets, RouteTarget{Path: route, Port: port})
 	}
+	if err := ApplyProxyRoutes(targets, []ProxyRoute{{Path: "/api/agents", Streaming: true, ReadTimeout: 300}, {Path: "/login", WebSocket: true, ReadTimeout: 60}}); err != nil {
+		t.Fatal(err)
+	}
 	nginx, _, err := renderNginxConfig("api.example.com", targets, true)
 	if err != nil {
 		t.Fatal(err)
@@ -248,7 +252,7 @@ def login(): pass`,
 	}
 	if nginxBinary, err := exec.LookPath("nginx"); err == nil {
 		nginxRoot := t.TempDir()
-		fullConfig := "pid " + filepath.Join(nginxRoot, "nginx.pid") + ";\nerror_log stderr;\nevents {}\nhttp {\n" + nginx + "}\n"
+		fullConfig := "pid " + filepath.Join(nginxRoot, "nginx.pid") + ";\nerror_log stderr;\nevents {}\nhttp {\naccess_log off;\n" + nginx + "}\n"
 		configPath := filepath.Join(nginxRoot, "nginx.conf")
 		if err := os.WriteFile(configPath, []byte(fullConfig), 0o644); err != nil {
 			t.Fatal(err)
@@ -275,6 +279,9 @@ func TestWalkerDiscoversMixedBackendServices(t *testing.T) {
 
 	root := t.TempDir()
 	sources := map[string]string{
+		"apps/web/package.json":             `{"name":"web","scripts":{"build":"next build","start":"next start"},"dependencies":{"next":"16"}}`,
+		"apps/preview/package.json":         `{"scripts":{"dev":"vite"},"devDependencies":{"react":"19","vite":"7"}}`,
+		"node_modules/ignored/package.json": `{"dependencies":{"next":"16"}}`,
 		"services/users/pyproject.toml": `[project]
 name = "users"`,
 		"services/users/main.py": `from fastapi import FastAPI
@@ -316,11 +323,23 @@ app.listen(process.env.PORT)`,
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(report.Services) != 3 {
-		t.Fatalf("services = %#v, want three", report.Services)
+	if len(report.Services) != 5 {
+		t.Fatalf("services = %#v, want five", report.Services)
 	}
 	byRuntime := map[string]walker.ServiceCandidate{}
 	for _, service := range report.Services {
+		if service.Kind == "web_application" {
+			if service.Root == "apps/web" && (service.Framework != "Next.js" || service.Entry != "apps/web/package.json" || service.StartCommand != "npm start") {
+				t.Fatalf("Next.js candidate = %#v", service)
+			}
+			if service.Root == "apps/preview" && (service.Framework != "React with Vite" || service.StartCommand != "") {
+				t.Fatalf("development script became a production start command: %#v", service)
+			}
+			continue
+		}
+		if service.Runtime == "node" && (service.Framework != "Express" || service.Kind != "api_service") {
+			t.Fatalf("existing Node candidate lost framework metadata: %#v", service)
+		}
 		byRuntime[service.Runtime] = service
 	}
 	want := map[string]struct {
@@ -580,7 +599,7 @@ func TestWildcardTLSValidationAndNginxRendering(t *testing.T) {
 	}
 	if nginxBinary, err := exec.LookPath("nginx"); err == nil {
 		nginxRoot := t.TempDir()
-		fullConfig := "pid " + filepath.Join(nginxRoot, "nginx.pid") + ";\nerror_log stderr;\nevents {}\nhttp {\n" + config + "}\n"
+		fullConfig := "pid " + filepath.Join(nginxRoot, "nginx.pid") + ";\nerror_log stderr;\nevents {}\nhttp {\naccess_log off;\n" + config + "}\n"
 		configPath := filepath.Join(nginxRoot, "nginx.conf")
 		if err := os.WriteFile(configPath, []byte(fullConfig), 0o600); err != nil {
 			t.Fatal(err)
@@ -594,5 +613,82 @@ func TestWildcardTLSValidationAndNginxRendering(t *testing.T) {
 	}
 	if _, _, _, err := renderNginxConfigWithTLS("api.*.example.com", []RouteTarget{{Path: "/", Port: 8000}}, true, certPath, keyPath); err == nil {
 		t.Fatal("embedded wildcard domain was accepted")
+	}
+}
+
+func TestProxyRouteOverrides(t *testing.T) {
+	targets := []RouteTarget{{Path: "/api/chat", Port: 8000}, {Path: "/api/socket", Port: 8000}, {Path: "/api/plain", Port: 8000}}
+	routes := []ProxyRoute{{Path: "/api/chat", Streaming: true, ReadTimeout: 300}, {Path: "/api/socket", WebSocket: true, ReadTimeout: 600}, {Path: "/api/plain", ReadTimeout: 60}}
+	if err := ApplyProxyRoutes(targets, routes); err != nil {
+		t.Fatal(err)
+	}
+	config, _, err := renderNginxConfig("api.example.com", targets, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct{ path, buffering, upgrade, timeout string }{
+		{"/api/chat", "off", "''", "300"}, {"/api/socket", "on", "$http_upgrade", "600"}, {"/api/plain", "on", "''", "60"},
+	} {
+		_, block, found := strings.Cut(config, "location = "+test.path+" {")
+		if !found {
+			t.Fatalf("missing location %s", test.path)
+		}
+		block, _, _ = strings.Cut(block, "}")
+		for _, directive := range []string{"proxy_buffering " + test.buffering + ";", "proxy_set_header Upgrade " + test.upgrade + ";", "proxy_read_timeout " + test.timeout + "s;", "proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;"} {
+			if !strings.Contains(block, directive) {
+				t.Fatalf("%s is missing %s:\n%s", test.path, directive, block)
+			}
+		}
+	}
+	for _, invalid := range [][]ProxyRoute{
+		{{Path: "/missing", ReadTimeout: 60}}, {{Path: "/api/chat", ReadTimeout: 0}}, {{Path: "/api/chat", ReadTimeout: 3601}},
+		{{Path: "/api/chat", ReadTimeout: 60}, {Path: "/api/chat", ReadTimeout: 60}}, make([]ProxyRoute, 65),
+	} {
+		if ApplyProxyRoutes(targets, invalid) == nil {
+			t.Fatalf("invalid override accepted: %+v", invalid)
+		}
+	}
+	t.Chdir(t.TempDir())
+	if err := RegisterProject("sample", Project{Port: 8000, ProxyRoutes: routes}); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := GetRegistry()
+	if err != nil || !reflect.DeepEqual(registry["sample"].ProxyRoutes, routes) {
+		t.Fatalf("proxy settings not persisted: %+v, %v", registry, err)
+	}
+	if err := RegisterProject("sample", Project{ProxyRoutes: []ProxyRoute{}}); err != nil {
+		t.Fatal(err)
+	}
+	registry, err = GetRegistry()
+	if err != nil || len(registry["sample"].ProxyRoutes) != 0 {
+		t.Fatal("clearing proxy settings did not persist")
+	}
+}
+
+func TestNodePreparationBuildsAndStopsOnBuildFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("native deployment runs on Linux")
+	}
+	if _, err := exec.LookPath("npm"); err != nil {
+		t.Skip("npm is not installed")
+	}
+	t.Setenv("npm_config_offline", "true")
+	root := t.TempDir()
+	manifest := filepath.Join(root, "package.json")
+	for _, fail := range []bool{false, true} {
+		script := `node -e \"require('fs').writeFileSync('built', 'ok')\"`
+		if fail {
+			script = `node -e \"process.exit(17)\"`
+		}
+		if err := os.WriteFile(manifest, []byte(`{"name":"build-check","version":"1.0.0","scripts":{"build":"`+script+`"}}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, err := PrepareNativeService(root, "node", "package.json")
+		if (err != nil) != fail {
+			t.Fatalf("build failure = %v, error = %v", fail, err)
+		}
+		if !fail && !FileExists(filepath.Join(root, "built")) {
+			t.Fatal("Node build script was not run")
+		}
 	}
 }

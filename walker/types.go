@@ -30,7 +30,7 @@ type DockerfileInfo struct {
 	ExposedPorts []int  `json:"exposed_ports"`
 }
 
-// ServiceCandidate describes a backend entrypoint without treating detection
+// ServiceCandidate describes an application entrypoint without treating detection
 // as permission to deploy it. Evidence and confidence keep filename-based
 // guesses visible to the user instead of silently turning them into services.
 type ServiceCandidate struct {
@@ -41,6 +41,10 @@ type ServiceCandidate struct {
 	StartCommand string   `json:"start_command,omitempty"`
 	Confidence   string   `json:"confidence"`
 	Evidence     []string `json:"evidence"`
+
+	Kind              string   `json:"kind,omitempty"`
+	Framework         string   `json:"framework,omitempty"`
+	FrameworkEvidence []string `json:"framework_evidence,omitempty"`
 }
 
 type Report struct {

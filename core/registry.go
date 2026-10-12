@@ -38,6 +38,8 @@ type Project struct {
 	TLSCert        string    `json:"tls_cert,omitempty"`
 	TLSKey         string    `json:"tls_key,omitempty"`
 	Releases       []Release `json:"releases,omitempty"`
+
+	ProxyRoutes []ProxyRoute `json:"proxy_routes,omitempty"`
 }
 
 // Release is one successful deploy operation pinned by a Git reference.
@@ -163,6 +165,9 @@ func RegisterProject(projectName string, project Project) error {
 	}
 	if project.Email != "" {
 		existing.Email = project.Email
+	}
+	if project.ProxyRoutes != nil {
+		existing.ProxyRoutes = project.ProxyRoutes
 	}
 	if project.TLSCert != "" {
 		existing.TLSCert = project.TLSCert

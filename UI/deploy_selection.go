@@ -19,13 +19,13 @@ type RuntimeSelection struct {
 	ContainerPort                   int
 }
 
-// PrintServiceCandidates shows the evidence behind every detected backend.
+// PrintServiceCandidates shows the evidence behind every detected application.
 func PrintServiceCandidates(services []walker.ServiceCandidate) {
 	if len(services) == 0 {
-		fmt.Println("[→] No backend service entrypoints detected.")
+		fmt.Println("[→] No application entrypoints detected.")
 		return
 	}
-	fmt.Println("\nDetected backend services:")
+	fmt.Println("\nDetected applications:")
 	for index, service := range services {
 		fmt.Printf("  %d. %s (%s, %s confidence)\n     Root: %s\n     Entry: %s\n", index+1, service.Name, service.Runtime, service.Confidence, service.Root, service.Entry)
 		if service.StartCommand != "" {
@@ -49,7 +49,7 @@ func SelectServices(reader *bufio.Reader, services []walker.ServiceCandidate, sa
 		return services, nil
 	}
 	if nonInteractive {
-		return nil, fmt.Errorf("multiple backend services found; use --service with comma-separated names, roots, or entry files")
+		return nil, fmt.Errorf("multiple applications found; use --service with comma-separated names, roots, or entry files")
 	}
 	fmt.Println("\nNative service selection:\n  0. Repository root (manual monorepo configuration)")
 	for index, service := range services {

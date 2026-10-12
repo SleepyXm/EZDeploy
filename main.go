@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -157,6 +159,7 @@ func deployOne(args []string, rollback *core.DeploymentRollback, operation deplo
 	dockerfile, dockerContext := flags.String("dockerfile", "", "production Dockerfile path"), flags.String("docker-context", "", "Docker build context relative to the repository")
 	nonInteractive, noWhitelist := flags.Bool("non-interactive", false, "fail instead of prompting for missing values"), flags.Bool("no-route-whitelist", false, "proxy every application path")
 	tlsCert, tlsKey := flags.String("tls-cert", "", "existing wildcard TLS certificate"), flags.String("tls-key", "", "existing wildcard TLS key")
+	proxySettings := flags.String("proxy-routes", "", "base64-encoded JSON route proxy settings")
 	var extraRoutes routeList
 	flags.Var(&extraRoutes, "allow-route", "additional route path; repeatable")
 	if err := flags.Parse(args[1:]); err != nil {
@@ -182,6 +185,19 @@ func deployOne(args []string, rollback *core.DeploymentRollback, operation deplo
 		}
 	}
 	existing, registered := registry[projectName]
+	proxyRoutes := existing.ProxyRoutes
+	if *proxySettings != "" {
+		payload, err := base64.StdEncoding.DecodeString(*proxySettings)
+		if err != nil || len(payload) > 24576 {
+			return deploymentResult{}, fmt.Errorf("invalid proxy route settings encoding")
+		}
+		if err := json.Unmarshal(payload, &proxyRoutes); err != nil {
+			return deploymentResult{}, fmt.Errorf("invalid proxy route settings: %w", err)
+		}
+	}
+	if *noWhitelist && len(proxyRoutes) > 0 {
+		return deploymentResult{}, fmt.Errorf("per-route proxy settings require route whitelisting")
+	}
 	// Redeploy is deliberately the existing deployment path with a registry guard:
 	// saved runtime, services, ports and proxy settings are reused after every rescan.
 	if operation != operationDeploy && !registered {
@@ -366,6 +382,9 @@ func deployOne(args []string, rollback *core.DeploymentRollback, operation deplo
 	if *noWhitelist && len(targets) == 0 {
 		targets = []core.RouteTarget{{Port: *port}}
 	}
+	if err := core.ApplyProxyRoutes(targets, proxyRoutes); err != nil {
+		return deploymentResult{}, err
+	}
 	*domain = guards.FirstValue(*domain, existing.Domain)
 	if *domain == "" {
 		if *nonInteractive {
@@ -418,7 +437,7 @@ func deployOne(args []string, rollback *core.DeploymentRollback, operation deplo
 	record := core.Project{
 		Path: projectPath, Port: *port, Domain: *domain, Email: *email, RepoURL: repoURL,
 		Branch: *branch, Revision: revision,
-		SSHKey: *sshKey, TLSCert: *tlsCert, TLSKey: *tlsKey,
+		SSHKey: *sshKey, TLSCert: *tlsCert, TLSKey: *tlsKey, ProxyRoutes: proxyRoutes,
 		StartCommand: *start, Runtime: runtime.Mode,
 		Dockerfile: runtime.Dockerfile, DockerContext: runtime.DockerContext,
 		ContainerPort: runtime.ContainerPort,
@@ -517,6 +536,7 @@ func printDeployUsage(operation deploymentOperation) {
   --container-port <number>    application port inside the container
   --tls-cert <path>            existing certificate for a wildcard domain
   --tls-key <path>             existing private key for a wildcard domain
+  --proxy-routes <base64>      JSON route streaming, WebSocket and timeout settings
   --non-interactive            fail instead of prompting for missing values
   --allow-route <path>         additional allowed path; repeatable
   --no-route-whitelist         proxy every application path

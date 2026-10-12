@@ -61,6 +61,7 @@ sudo ezdeploy redeploy backend
 | `--tls-key <path>` | Use its existing private key. |
 | `--allow-route <path>` | Add an undiscovered route; repeatable. |
 | `--no-route-whitelist` | Proxy every application path. |
+| `--proxy-routes <base64>` | JSON route settings: `path`, `streaming`, `websocket`, and `read_timeout` in seconds. |
 | `--non-interactive` | Reuse saved values and fail instead of prompting. |
 
 ## Native or Docker starter
@@ -107,7 +108,11 @@ Route and Dockerfile rules extend the existing `yamls/walk.yml`. Common literal 
 
 The same walker lists Python, Go, and Node backend candidates in mixed-language repositories. Each candidate includes its service root, entry file, likely start command, confidence, and the filename, manifest, and server markers that produced the match. Interactive selection accepts comma-separated indexes such as `2,3`; `--service app/backend,go-backend` provides the non-interactive equivalent. Every selected service receives its own port, systemd unit, registry service record, working directory, dependency preparation, and Nginx route targets. A failure restores the repository as one release rather than leaving half of a monorepo running the new revision.
 
-Existing `.env` values are preserved at mode `0600`. Native applications run as `SUDO_USER`, not root. Go applications rebuild on update; conventional commands are detected for Go, `npm start`, and FastAPI `main:app`.
+Per-route proxy overrides apply only to routes in the selected services, with separate streaming and WebSocket switches and a read timeout of 1–3600 seconds. Omitted settings reuse saved overrides; an encoded empty JSON array resets them to the existing defaults. Overrides are stored in the project registry and applied through the normal Nginx validation and rollback path.
+
+Existing `.env` values are preserved at mode `0600`. Native applications run as `SUDO_USER`, not root. Go applications rebuild on update; Node applications run `npm install` followed by `npm run build --if-present`. Conventional commands are detected for Go, `npm start`, and FastAPI `main:app`.
+
+The shared scanner identifies Next.js, Astro, Nuxt, SvelteKit, Remix, React/Vite, Express, Fastify and NestJS from package dependencies, including applications with no conventional backend entry file. A development script is not selected as a production start command; provide a `start` script or `--start`. Frontend routes still require an explicit `--allow-route` or `--no-route-whitelist` when source routes cannot be discovered.
 
 ## Releases and rollback
 

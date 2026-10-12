@@ -105,7 +105,10 @@ func installNodeDeps(projectPath string) error {
 	if err := runHeavy(projectPath, "Installing Node dependencies", "npm", "install"); err != nil {
 		return fmt.Errorf("npm install: %w", err)
 	}
-	fmt.Println("[✓] Dependencies installed")
+	if err := runHeavy(projectPath, "Building Node application", "npm", "run", "build", "--if-present"); err != nil {
+		return fmt.Errorf("npm run build: %w", err)
+	}
+	fmt.Println("[✓] Dependencies installed and build completed")
 	return nil
 }
 

@@ -508,6 +508,33 @@ func (s *Scanner) discoverServices(root string, entries []serviceEntry, manifest
 		}
 	}
 
+	for serviceRoot, manifests := range manifestDirs {
+		if !manifests["package.json"] {
+			continue
+		}
+		pkg := readNodePackage(root, serviceRoot)
+		kind, framework, evidence := pkg.framework()
+		if framework == "" {
+			continue
+		}
+		key := "node:" + serviceRoot
+		candidate, exists := services[key]
+		if !exists {
+			entry := filepath.ToSlash(filepath.Join(serviceRoot, "package.json"))
+			candidate = ServiceCandidate{Name: serviceName(root, serviceRoot, entry, pkg.Name), Runtime: "node", Root: serviceRoot, Entry: entry,
+				Confidence: "high", Evidence: []string{"manifest package.json"}}
+			if serviceRoot == "." && strings.TrimSpace(pkg.Name) == "" {
+				candidate.Name = "Web application"
+			}
+			if strings.TrimSpace(pkg.Scripts["start"]) != "" {
+				candidate.StartCommand = "npm start"
+			}
+		}
+		candidate.Kind, candidate.Framework, candidate.FrameworkEvidence = kind, framework, []string{evidence}
+		candidate.Evidence = append(candidate.Evidence, evidence)
+		services[key] = candidate
+	}
+
 	result := make([]ServiceCandidate, 0, len(services))
 	for _, service := range services {
 		result = append(result, service)
@@ -566,16 +593,47 @@ func serviceMarkers(data []byte, markers []string, runtime string) []string {
 type nodePackage struct {
 	Name    string            `json:"name"`
 	Scripts map[string]string `json:"scripts"`
+
+	Dependencies    map[string]string `json:"dependencies"`
+	DevDependencies map[string]string `json:"devDependencies"`
 }
 
 func readNodePackage(root, serviceRoot string) nodePackage {
 	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(serviceRoot), "package.json"))
-	if err != nil {
+	if err != nil || len(data) > 1<<20 {
 		return nodePackage{}
 	}
 	var pkg nodePackage
-	_ = json.Unmarshal(data, &pkg)
+	if json.Unmarshal(data, &pkg) != nil {
+		return nodePackage{}
+	}
 	return pkg
+}
+
+func (pkg nodePackage) framework() (string, string, string) {
+	has := func(name string) bool {
+		_, dependency := pkg.Dependencies[name]
+		_, development := pkg.DevDependencies[name]
+		return dependency || development
+	}
+	for _, framework := range []struct{ dependency, name, kind string }{
+		{"next", "Next.js", "web_application"}, {"astro", "Astro", "web_application"}, {"nuxt", "Nuxt", "web_application"},
+		{"@sveltejs/kit", "SvelteKit", "web_application"}, {"@remix-run/react", "Remix", "web_application"},
+		{"vite", "React with Vite", "web_application"}, {"react-scripts", "React", "web_application"},
+		{"express", "Express", "api_service"}, {"fastify", "Fastify", "api_service"}, {"@nestjs/core", "NestJS", "api_service"},
+	} {
+		if !has(framework.dependency) {
+			continue
+		}
+		if framework.dependency == "vite" {
+			if !has("react") {
+				continue
+			}
+			return framework.kind, framework.name, `package.json dependencies "react" and "vite"`
+		}
+		return framework.kind, framework.name, `package.json dependency "` + framework.dependency + `"`
+	}
+	return "", "", ""
 }
 
 func serviceName(repoRoot, serviceRoot, entry, packageName string) string {
